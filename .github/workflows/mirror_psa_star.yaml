@@ -1,0 +1,23 @@
+name: Mirror psa-implementation to openpilot/psa-star
+
+on:
+  push:
+    branches: [psa-implementation]
+
+concurrency:
+  group: mirror-psa-star
+  cancel-in-progress: true
+
+jobs:
+  mirror:
+    # inert once this file is mirrored into RWL-Dittrich/openpilot
+    if: github.repository == 'RWL-Dittrich/StarPilot'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0             # full history: a shallow clone cannot push
+          persist-credentials: false # else checkout's GITHUB_TOKEN extraheader overrides the PAT and the push is denied
+
+      - name: Force-push to RWL-Dittrich/openpilot psa-star
+        run: git push --force "https://x-access-token:${{ secrets.OPENPILOT_PSA_STAR_TOKEN }}@github.com/RWL-Dittrich/openpilot.git" HEAD:refs/heads/psa-star
