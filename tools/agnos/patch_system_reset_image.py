@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
-<<<<<<< HEAD
-"""Build StarPilot AGNOS from the exact upstream system image.
-=======
 """Legacy verifier for the pre-builder StarPilot AGNOS image path.
 
 Production images are built by agnos-builder. Keep this module only for
 auditing the previously published 19.6.13 image; do not use it for releases.
->>>>>>> star/StarPilot
 
 The output starts with comma's pinned AGNOS system partition, adds the Python
 packages required by StarPilot's older runtime and C3 support, and customizes
@@ -86,8 +82,6 @@ ALLOWED_IMAGE_MUTATIONS = frozenset({
   *LEGACY_RUNTIME_LIBRARY_PATHS,
   *FACTORY_INSTALL_PATHS,
 })
-<<<<<<< HEAD
-=======
 BLUETOOTH_RUNTIME_PATHS = frozenset({
   "/etc/alsa/conf.d/20-bluealsa.conf",
   "/etc/bluetooth/input.conf",
@@ -143,7 +137,6 @@ BLUETOOTH_RUNTIME_PATHS = frozenset({
   "/usr/share/zsh/site-functions/_bluetoothctl",
 })
 BLUETOOTH_RUNTIME_DIRECTORIES = frozenset({"/usr/lib/firmware/qca"})
->>>>>>> star/StarPilot
 
 # Exact system partition pinned by ~/openpilot as of the 19.6 AGNOS release.
 UPSTREAM_VERSION = "19.6"
@@ -227,10 +220,7 @@ def parse_args() -> argparse.Namespace:
   parser.add_argument("--c3-deps-url", default=C3_DEPENDENCY_SOURCE_URL,
                       help="Exact prior StarPilot image containing the compatibility packages")
   parser.add_argument("--c3-deps-image", help="Use a local exact StarPilot dependency source image")
-<<<<<<< HEAD
-=======
   parser.add_argument("--bluetooth-rootfs", help="Validated additive Bluetooth rootfs overlay")
->>>>>>> star/StarPilot
   parser.add_argument("--set-version", required=True, help="StarPilot revision, for example 19.6.5")
   parser.add_argument("--work-dir", default=".cache/agnos_upstream_system")
   parser.add_argument("--output-xz", help="Output .img.xz path")
@@ -333,45 +323,6 @@ def install_bundled_installer(owner: str, branch: str, installer_url: str) -> No
 
   source = replace_exactly(
     source,
-<<<<<<< HEAD
-    '''    # autocomplete incomplete URLs
-    if re.match("^([^/.]+)/([^/]+)$", url):
-      url = f"https://installer.comma.ai/{url}"
-
-    parsed = urlparse(url, scheme='https')
-    self.download_url = (urlparse(f"https://{url}") if not parsed.netloc else parsed).geturl()''',
-    '''    # owner/branch installs use the bundled COMMA/GBM installer. The
-    # installer.comma.ai binary targets Wayland and cannot run in this AGNOS.
-    self.installer_url = ("https://installer.comma.ai/firestar5683/StarPilot" if url == OPENPILOT_URL else url)
-    self.bundled_installer_target = (("firestar5683", "StarPilot") if url == OPENPILOT_URL else None)
-    match = re.fullmatch(r"(?:https://installer\\.comma\\.ai/)?([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)", url)
-    if match:
-      self.bundled_installer_target = match.groups()
-      self.installer_url = f"https://installer.comma.ai/{'/'.join(self.bundled_installer_target)}"
-      url = OPENPILOT_URL
-
-    parsed = urlparse(url, scheme='https')
-    self.download_url = (urlparse(f"https://{url}") if not parsed.netloc else parsed).geturl()''',
-  )
-
-  source = replace_exactly(
-    source,
-    '''    try:
-      import tempfile
-''',
-    '''    try:
-      bundled_target = self.bundled_installer_target
-      if bundled_target is not None:
-        install_bundled_installer(*bundled_target, self.installer_url)
-        time.sleep(0.1)
-        gui_app.request_close()
-        return
-
-      import tempfile
-''',
-  )
-
-=======
     'USER_AGENT = f"AGNOSSetup-{HARDWARE.get_os_version()}"',
     'USER_AGENT = f"AGNOSSetup-{\'.\'.join(HARDWARE.get_os_version().split(\'.\')[:2])}"',
   )
@@ -415,7 +366,6 @@ def install_bundled_installer(owner: str, branch: str, installer_url: str) -> No
 ''',
   )
 
->>>>>>> star/StarPilot
   source = replace_exactly(
     source,
     '''      req = urllib.request.Request(self.download_url, headers=headers)
@@ -560,10 +510,7 @@ def validate_factory_install_payloads(setup: Path, installer: Path) -> None:
       if "CONNECTIVITY_URL = \"https://openpilot.comma.ai\"" not in source:
         raise RuntimeError(f"Connectivity check changed unexpectedly in {member}")
       for expected in (
-<<<<<<< HEAD
-=======
         'USER_AGENT = f"AGNOSSetup-{\'.\'.join(HARDWARE.get_os_version().split(\'.\')[:2])}"',
->>>>>>> star/StarPilot
         "patch_bundled_installer(tmpfile, *self.bundled_installer_target)",
         "install_bundled_installer(*bundled_target, self.installer_url)",
         'self.bundled_installer_target = (("firestar5683", "StarPilot") if url == OPENPILOT_URL else None)',
@@ -859,12 +806,8 @@ def add_path_to_image(debugfs: str, image: Path, source: Path, destination: str)
   if source.is_symlink():
     ensure_image_directory(debugfs, image, str(Path(destination).parent))
     target = os.readlink(source)
-<<<<<<< HEAD
-    if "/" in target or target in ("", ".", ".."):
-=======
     resolved_target = posixpath.normpath(posixpath.join(posixpath.dirname(destination), target))
     if posixpath.isabs(target) or target in ("", ".", "..") or not resolved_target.startswith("/"):
->>>>>>> star/StarPilot
       raise RuntimeError(f"Unsafe compatibility-library symlink target: {target!r}")
     run_debugfs(debugfs, image, f"symlink {destination} {target}", write=True)
     stat = run_debugfs(debugfs, image, f"stat {destination}")
@@ -886,8 +829,6 @@ def add_path_to_image(debugfs: str, image: Path, source: Path, destination: str)
     run_debugfs(debugfs, image, f"set_inode_field <{inode}> {field} {value}", write=True)
 
 
-<<<<<<< HEAD
-=======
 def validate_bluetooth_rootfs(source: Path) -> dict[str, dict[str, object]]:
   if not source.is_dir():
     raise RuntimeError(f"Bluetooth rootfs overlay not found: {source}")
@@ -937,7 +878,6 @@ def add_bluetooth_rootfs(debugfs: str, image: Path, source: Path) -> dict[str, d
   return manifest
 
 
->>>>>>> star/StarPilot
 def replace_image_file(debugfs: str, image: Path, source: Path, destination: str) -> None:
   if destination not in FACTORY_INSTALL_PATHS:
     raise RuntimeError(f"Refusing to replace non-factory-install path {destination}")
@@ -1119,11 +1059,8 @@ def main() -> int:
     add_path_to_image(debugfs, candidate_raw, legacy_runtime_dir / Path(image_path).name, image_path)
   replace_image_file(debugfs, candidate_raw, customized_setup, SETUP_PATH_IN_IMAGE)
   replace_image_file(debugfs, candidate_raw, customized_installer, INSTALLER_PATH_IN_IMAGE)
-<<<<<<< HEAD
-=======
   if bluetooth_rootfs:
     bluetooth_manifest = add_bluetooth_rootfs(debugfs, candidate_raw, bluetooth_rootfs)
->>>>>>> star/StarPilot
 
   if read_image_text(debugfs, candidate_raw, VERSION_PATH_IN_IMAGE) != target_version:
     raise RuntimeError("Failed to write the StarPilot AGNOS version marker")
@@ -1165,11 +1102,7 @@ def main() -> int:
     "base_version": UPSTREAM_VERSION,
     "base_raw_sha256": UPSTREAM_RAW_SHA256,
     "target_version": target_version,
-<<<<<<< HEAD
-    "allowed_image_mutations": sorted(ALLOWED_IMAGE_MUTATIONS),
-=======
     "allowed_image_mutations": sorted(allowed_image_mutations),
->>>>>>> star/StarPilot
     "raw_sha256": raw_hash,
     "raw_size": candidate_raw.stat().st_size,
     "xz_sha256": sha256_file(output_xz),
@@ -1180,10 +1113,7 @@ def main() -> int:
     "starpilot_dependency_paths": list(STAR_PILOT_DEPENDENCY_PATHS),
     "c3_dependency_paths": list(C3_DEPENDENCY_PATHS),
     "legacy_runtime_library_paths": list(LEGACY_RUNTIME_LIBRARY_PATHS),
-<<<<<<< HEAD
-=======
     "bluetooth_runtime": bluetooth_manifest,
->>>>>>> star/StarPilot
     "protected_payloads": candidate_payloads,
     "factory_install_payloads": candidate_factory_payloads,
     "factory_reset_stack": (
@@ -1202,14 +1132,10 @@ def main() -> int:
   print(f"  raw sha256:     {raw_hash}")
   print(f"  xz sha256:      {metadata['xz_sha256']}")
   print(f"  metadata:       {metadata_path}")
-<<<<<<< HEAD
-  print("  only mutations: /VERSION, additive StarPilot runtime/C3 compatibility, and factory setup/installer branding")
-=======
   mutation_summary = "/VERSION, additive StarPilot runtime/C3 compatibility, and factory setup/installer branding"
   if bluetooth_rootfs:
     mutation_summary += ", plus the validated additive Bluetooth runtime"
   print(f"  only mutations: {mutation_summary}")
->>>>>>> star/StarPilot
 
   if args.new_url:
     manifest_path = Path(args.manifest).resolve()

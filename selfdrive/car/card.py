@@ -557,8 +557,11 @@ class Car:
     while not evt.is_set():
       self.safe_mode = self.params.get_bool("SafeMode")
       self.is_metric = self.params.get_bool("IsMetric")
-<<<<<<< HEAD
-      self.experimental_mode = self.params.get_bool("ExperimentalMode") and self.CP.openpilotLongitudinalControl and not self.safe_mode
+      self.experimental_mode = (
+        self.params.get_bool("ExperimentalMode") and
+        experimental_mode_available(self.CP) and
+        not self.safe_mode
+      )
 
       # alpha long was switched off onroad: let the interface re-enable any ECU it knocked
       # out while we can still transmit, and only then cycle. pandad puts the panda in
@@ -570,13 +573,6 @@ class Car:
           self.params.put_bool("OnroadCycleRequested", True)
           break
 
-=======
-      self.experimental_mode = (
-        self.params.get_bool("ExperimentalMode") and
-        experimental_mode_available(self.CP) and
-        not self.safe_mode
-      )
->>>>>>> star/StarPilot
       time.sleep(0.1)
 
   def card_thread(self):

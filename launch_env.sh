@@ -21,11 +21,7 @@ fi
 export QCOM_PRIORITY=12
 
 if [ -z "$AGNOS_VERSION" ]; then
-<<<<<<< HEAD
-  export AGNOS_VERSION="19.6.10"
-=======
   export AGNOS_VERSION="19.6.20"
->>>>>>> star/StarPilot
 fi
 
 if [ -z "$AGNOS_ACCEPTED_VERSIONS" ]; then

@@ -25,13 +25,10 @@ from openpilot.common.swaglog import cloudlog
 from cereal import messaging, log
 
 SESSION_TIMEOUT_SECONDS = 300
-<<<<<<< HEAD
-=======
 
 
 def _ice_candidates(sdp: str) -> list[str]:
   return [line.removeprefix("a=") for line in sdp.splitlines() if line.startswith("a=candidate:")]
->>>>>>> star/StarPilot
 
 # socket trick: route lookup for 8.8.8.8 (nothing is sent or actually connected to)
 # return the source interfaces IP which is the default interface of the device
@@ -408,11 +405,6 @@ def _text_response(text: str, status: int = 200) -> tuple[int, bytes, str]:
   return (status, text.encode(), "text/plain; charset=utf-8")
 
 
-<<<<<<< HEAD
-async def handle_get_stream(state: ServerState, raw_body: bytes) -> tuple[int, bytes, str]:
-  stream_dict = state.streams
-  body = StreamRequestBody(**json.loads(raw_body))
-=======
 async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: str) -> tuple[int, bytes, str]:
   if content_type != "application/json":
     return _json_response({"error": "unsupported media type"}, status=415)
@@ -422,7 +414,6 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
   valid_fields = {f.name for f in StreamRequestBody.__dataclass_fields__.values()}
   filtered_dict = {k: v for k, v in parsed_dict.items() if k in valid_fields}
   body = StreamRequestBody(**filtered_dict)
->>>>>>> star/StarPilot
 
   async with state.stream_lock:
     # don't remove existing connection on prewarm request
@@ -444,11 +435,8 @@ async def handle_get_stream(state: ServerState, raw_body: bytes, content_type: s
     stream_dict[session.identifier] = session
     try:
       answer = await asyncio.wait_for(session.get_answer(), timeout=30)
-<<<<<<< HEAD
-=======
       cloudlog.event("webrtcd.session.ice_candidates", session_id=session.identifier,
                      offer_candidates=_ice_candidates(body.sdp), answer_candidates=_ice_candidates(answer.sdp))
->>>>>>> star/StarPilot
     except TimeoutError:
       await session.stop()
       stream_dict.pop(session.identifier, None)
@@ -538,11 +526,7 @@ class WebrtcdHandler(BaseHTTPRequestHandler):
         services = parse_qs(parsed.query).get("services", [""])[0]
         result = self._run(handle_get_schema(self.server.state, services))
       elif parsed.path == "/stream":
-<<<<<<< HEAD
-        result = self._run(handle_get_stream(self.server.state, self._read_body()))
-=======
         result = self._run(handle_get_stream(self.server.state, self._read_body(), self.headers.get_content_type()))
->>>>>>> star/StarPilot
       else:  # /notify
         try:
           payload = json.loads(self._read_body())
