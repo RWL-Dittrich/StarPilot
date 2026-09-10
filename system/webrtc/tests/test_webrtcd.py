@@ -4,7 +4,11 @@ import pytest
 
 pytest.importorskip("libdatachannel", reason="the upstream WebRTC backend requires Python 3.12")
 
+<<<<<<< HEAD
 from openpilot.system.webrtc.webrtcd import ServerState, handle_get_schema, handle_post_notify, on_shutdown
+=======
+from openpilot.system.webrtc.webrtcd import ServerState, handle_get_schema, handle_get_stream, handle_post_notify, on_shutdown
+>>>>>>> star/StarPilot
 
 
 @pytest.mark.asyncio
@@ -23,6 +27,7 @@ async def test_get_schema_rejects_unknown_service():
 
 
 @pytest.mark.asyncio
+<<<<<<< HEAD
 async def test_notify_and_shutdown_active_stream(mocker):
   state = ServerState()
   session = mocker.MagicMock()
@@ -36,6 +41,28 @@ async def test_notify_and_shutdown_active_stream(mocker):
   channel = session.stream.get_messaging_channel.return_value
   channel.send.assert_called_once_with(json.dumps({"type": "ping"}))
 
+=======
+async def test_stream_rejects_non_json_content_type():
+  response = await handle_get_stream(ServerState(), b"{}", "text/plain")
+
+  assert response == (415, b'{"error": "unsupported media type"}', "application/json; charset=utf-8")
+
+
+@pytest.mark.asyncio
+async def test_notify_and_shutdown_active_stream(mocker):
+  state = ServerState()
+  session = mocker.MagicMock()
+  session.stop = mocker.AsyncMock()
+  state.streams["test"] = session
+
+  status, body, content_type = await handle_post_notify(state, {"type": "ping"})
+
+  assert (status, body) == (200, b"OK")
+  assert content_type.startswith("text/plain")
+  channel = session.stream.get_messaging_channel.return_value
+  channel.send.assert_called_once_with(json.dumps({"type": "ping"}))
+
+>>>>>>> star/StarPilot
   await on_shutdown(state)
 
   session.stop.assert_awaited_once()

@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 STARPILOT_DISPLAY_VERSION = "6.7.6"
 DEFAULT_HOME_SCREEN_NAME = "StarPilot"
 HOME_SCREEN_NAME_MAX_LENGTH = 12
@@ -24,6 +25,9 @@ def home_screen_name(params) -> str:
       value = DEFAULT_HOME_SCREEN_NAME
 
   return normalize_home_screen_name(value)
+=======
+STARPILOT_DISPLAY_VERSION = "6.7.7"
+>>>>>>> star/StarPilot
 
 
 def starpilot_display_description(description: str | None) -> str:
