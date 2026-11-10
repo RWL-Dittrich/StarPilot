@@ -77,8 +77,7 @@ BO_ 488 DAT3_CMM: 3 Vector__XXX
 
 BO_ 520 Dyn_CMM: 8 CMM___Motor_SG
  SG_ P000_Com_nEng : 7|16@0+ (0.125,0) [0|8191.75] "1/min" Vector__XXX
- SG_ COUNTER : 19|4@0+ (1,0) [0|15] "" XXX
- SG_ CHECKSUM : 23|4@0+ (1,0) [0|15] "" XXX
+ SG_ P003_Com_trqActOut : 16|8@1+ (3,-150) [-150|615] "Nm" Vector__XXX
  SG_ P002_Com_rAPP : 24|8@1+ (0.5,0) [0|100] "%" Vector__XXX
  SG_ P027_ACCtl_stLogicOut : 32|1@1+ (1,0) [0|1] "-" Vector__XXX
  SG_ P014_Brk_stRed : 33|1@1+ (1,0) [0|1] "-" Vector__XXX
@@ -124,18 +123,10 @@ BO_ 728 NEW_MSG_2D8: 7 XXX
  SG_ ESP_STATUS_RELATED_INV : 29|1@0+ (1,0) [0|1] "" XXX
  SG_ ACC_ACTIVATION_RELATED : 43|1@0+ (1,0) [0|1] "" XXX
 
-BO_ 747 NEW_MSG_2EB: 5 XXX
- SG_ COUNTER : 27|4@0+ (1,0) [0|15] "" XXX
- SG_ CHECKSUM : 31|4@0+ (1,0) [0|15] "" XXX
-
-BO_ 749 NEW_MSG_2ED: 7 XXX
- SG_ COUNTER : 3|4@0+ (1,0) [0|15] "" XXX
- SG_ CHECKSUM : 7|4@0+ (1,0) [0|15] "" XXX
-
 BO_ 757 STEERING: 7 XXX
- SG_ 0_COUNTER : 3|4@0+ (1,0) [0|255] "" XXX
- SG_ 0_CHECKSUM : 7|4@0+ (1,0) [0|15] "" XXX
- SG_ DRIVER_TORQUE : 15|8@0- (1,0) [0|255] "" XXX
+ SG_ COUNTER : 3|4@0+ (1,0) [0|255] "" XXX
+ SG_ CHECKSUM : 7|4@0+ (1,0) [0|15] "" XXX
+ SG_ DRIVER_TORQUE : 15|8@0- (0.1,0) [-12.8|12.7] "Nm" XXX
  SG_ ANGLE : 31|16@0- (0.1,0) [-3276.8|3276.7] "degrees" XXX
  SG_ RATE : 47|12@0- (1,0) [0|4095] "" XXX
  SG_ NEW_SIGNAL_1 : 48|1@0+ (1,0) [0|1] "" XXX
@@ -169,7 +160,7 @@ BO_ 770 NEW_MSG_302: 7 XXX
 
 BO_ 773 STEERING_ALT: 7 XXX
  SG_ ANGLE : 7|16@0- (0.1,0) [-3276.8|3276.7] "degrees" XXX
- SG_ RATE : 23|8@0+ (1,0) [0|255] "" XXX
+ SG_ RATE : 23|8@0+ (4,0) [0|1020] "deg/s" XXX
  SG_ RATE_SIGN : 31|1@0+ (1,0) [0|1] "" XXX
  SG_ 0_COUNTER : 35|4@0+ (1,0) [0|255] "" XXX
  SG_ 0_CHECKSUM : 39|4@0+ (1,0) [0|15] "" XXX
@@ -209,8 +200,8 @@ BO_ 813 HS2_DYN_UCF_MDD_32D: 8 UC_FREIN
  SG_ ARRET_VHL_ADAS : 30|2@0+ (1,0) [0|3] "" CMM,BSI,PASS_HCU2,CMF,ARTIV
  SG_ DEFAUT_ACC_FREIN : 31|1@0+ (1,0) [0|1] "" CMM,BSI,PASS_HCU2,CMF,ARTIV
  SG_ VITESSE_LACET_BRUTE : 39|12@0+ (0.08,-163.84) [-163.84|163.68] "Degré/s" CMM,BSI,PASS_HCU2,CMF,ARTIV
- SG_ CHKSUM_TRME_DYN_UCF_ACC : 59|4@0+ (1,0) [0|15] "" CMM,BSI,PASS_HCU2,CMF,ARTIV
- SG_ CPT_PROCESS_4B_UC_FREIN : 63|4@0+ (1,0) [0|15] "" CMM,BSI,PASS_HCU2,CMF,ARTIV
+ SG_ CHECKSUM : 59|4@0+ (1,0) [0|15] "" CMM,BSI,PASS_HCU2,CMF,ARTIV
+ SG_ COUNTER : 63|4@0+ (1,0) [0|15] "" CMM,BSI,PASS_HCU2,CMF,ARTIV
 
 BO_ 840 Dyn2_CMM: 8 CMM___Motor_SG
  SG_ P165_FlFCD_stWtLvlSensDebVal : 0|1@1+ (1,0) [0|1] "" Vector__XXX
@@ -281,15 +272,9 @@ BO_ 909 HS2_DYN_ABR_38D: 8 UC_FREIN
  SG_ HADC_SPEED_CONDITION : 61|1@0+ (1,0) [0|1] "" CMF,CMM,BV,BSI,HCU1,ARTIV,BVN,AVAS
  SG_ HADC_CLUTCH_CONDITION : 63|2@0+ (1,0) [0|3] "" CMF,CMM,BV,BSI,HCU1,ARTIV,BVN,AVAS
 
-BO_ 939 NEW_MSG_3AB: 4 XXX
- SG_ COUNTER : 3|4@0+ (1,0) [0|15] "" XXX
- SG_ CHECKSUM : 7|4@0+ (1,0) [0|15] "" XXX
-
 BO_ 941 Dyn_EasyMove: 8 CDS___Fahrdynamikregelung
  SG_ P299_Com_bCrCtlInhib : 17|1@1+ (1,0) [0|1] "" Vector__XXX
  SG_ P337_Com_stPrkBrk : 24|3@1+ (1,0) [0|0] "" Vector__XXX
- SG_ 0_CHECKSUM : 59|4@0+ (1,0) [0|15] "" XXX
- SG_ 0_COUNTER : 63|4@0+ (1,0) [0|15] "" XXX
 
 BO_ 968 Dyn_STT_CMM: 2 Vector__XXX
  SG_ P412_Com_stDeadPnt : 2|2@1+ (1,0) [0|3] "" Vector__XXX
@@ -322,9 +307,6 @@ BO_ 1010 LANE_KEEP_ASSIST: 8 XXX
  SG_ SET_ANGLE : 55|14@0- (0.1,0) [-90|90] "" XXX
  SG_ unknown4 : 57|1@0+ (1,0) [0|1] "" XXX
 
-BO_ 1037 NEW_MSG_40D: 8 XXX
- SG_ COUNTER : 59|4@0+ (1,0) [0|15] "" XXX
-
 BO_ 1042 Dat_BSI: 8 BSI___Kombiinstrument
  SG_ P040_MainBrakeFault : 0|1@1+ (1,0) [0|1] "-" Vector__XXX
  SG_ P103_Com_bRevGear : 2|1@1+ (1,0) [0|1] "" Vector__XXX
@@ -340,15 +322,14 @@ BO_ 1042 Dat_BSI: 8 BSI___Kombiinstrument
  SG_ PASSENGER_DOOR : 52|1@0+ (1,0) [0|1] "" Vector__XXX
 
 BO_ 1069 NEW_MSG_42D: 4 XXX
- SG_ 0_COUNTER : 16|4@1+ (1,0) [0|15] "" XXX
- SG_ 0_CHECKSUM : 20|4@1+ (1,0) [0|15] "" XXX
+ SG_ COUNTER : 16|4@1+ (1,0) [0|15] "" XXX
+ SG_ CHECKSUM : 20|4@1+ (1,0) [0|15] "" XXX
  SG_ ACC_RELATED : 31|8@0+ (1,0) [0|255] "" XXX
 
 BO_ 1074 Dat_BSI1: 8 BSI___Kombiinstrument
  SG_ P249_Com_stEngStopReq : 0|2@1+ (1,0) [0|3] "" Vector__XXX
  SG_ P216_Com_bSiaWkUp : 4|1@1+ (1,0) [0|1] "" Vector__XXX
  SG_ P214_Com_stMnWkUp : 6|2@1+ (1,0) [0|3] "" Vector__XXX
- SG_ COUNTER : 11|4@0+ (1,0) [0|15] "" XXX
  SG_ P402_Com_stStaDemActv : 12|2@1+ (1,0) [0|3] "" Vector__XXX
  SG_ P253_Com_bEngPrepReq : 21|1@1+ (1,0) [0|1] "" Vector__XXX
  SG_ P267_Exh_volRefl : 24|8@1+ (0.5,0) [0|255] "l" Vector__XXX
@@ -422,11 +403,10 @@ BO_ 1161 Dat_V2_BV: 8 BVA___Automatikgetriebe
  SG_ P375_Com_bMILDem : 16|1@0+ (1,0) [0|1] "" Vector__XXX
  SG_ P376_Com_bMILcntResDemRaw : 18|1@0+ (1,0) [0|1] "" Vector__XXX
  SG_ P285_Com_bPNDia : 20|1@1+ (1,0) [0|1] "" Vector__XXX
- SG_ IGNITION : 40|1@0+ (1,0) [0|1] "" XXX
  SG_ P218_Com_stDrvIdx : 48|8@1+ (1,0) [0|255] "" Vector__XXX
 
 BO_ 1173 IS_DAT_DIRA: 4 PSCM
- SG_ EPS_TORQUE : 7|8@0- (0.25,0) [-32|31.5] "Nm" Tester
+ SG_ DRIVER_TORQUE : 7|8@0- (0.25,0) [-32|31.5] "Nm" Tester
  SG_ ETAT_DA_2004 : 9|2@0+ (1,0) [0|3] "" Tester
  SG_ ETAT_DA_DYN : 13|2@0+ (1,0) [0|3] "" Tester
  SG_ ETAT_DA_2010 : 15|2@0+ (1,0) [0|3] "" Tester
@@ -441,10 +421,6 @@ BO_ 1224 Etat_Crash: 3 BSI___Kombiinstrument
  SG_ Reserved_1 : 7|8@0+ (1,0) [0|0] "-" Vector__XXX
  SG_ P223_CrashInfo : 8|1@0+ (1,0) [0|0] "-" Vector__XXX
  SG_ Reserved_2 : 23|8@0+ (1,0) [0|0] "-" Vector__XXX
-
-BO_ 1257 NEW_MSG_4E9: 3 XXX
- SG_ CHECKSUM : 11|4@0+ (1,0) [0|15] "" XXX
- SG_ COUNTER : 15|4@0+ (1,0) [0|15] "" XXX
 
 BO_ 1266 Dat3_BSI: 8 Vector__XXX
  SG_ P434_Com_rBattChHiRes : 7|10@0+ (0.1,0) [0|100] "" Vector__XXX
@@ -466,15 +442,6 @@ BO_ 1270 HS2_DAT_ARTIV_V2_4F6: 5 ARTIV
  SG_ TARGET_DETECTED : 36|1@0+ (1,0) [0|0] "" RITCS,BSI,CMF
  SG_ ARTIV_TARGET_CHANGE_INFO : 37|1@0+ (1,0) [0|0] "" RITCS,BSI,CMF
  SG_ TRAFFIC_DIRECTION : 39|2@0+ (1,0) [0|0] "" RITCS,BSI,CMF
-
-BO_ 1272 NEW_MSG_4F8: 5 XXX
- SG_ 0_COUNTER : 19|4@0+ (1,0) [0|15] "" XXX
- SG_ 0_CHECKSUM : 23|4@0+ (1,0) [0|15] "" XXX
- SG_ ACC_GO_RELATED : 26|1@0+ (1,0) [0|1] "" XXX
-
-BO_ 1278 NEW_MSG_4FE: 3 XXX
- SG_ COUNTER : 3|4@0+ (1,0) [0|15] "" XXX
- SG_ CHECKSUM : 7|4@0+ (1,0) [0|15] "" XXX
 
 BO_ 1293 Dat_ABR: 7 ABS___Antiblockiersystem
  SG_ P351_Com_bABSIntvActv : 5|1@1+ (1,0) [0|1] "" Vector__XXX
@@ -847,6 +814,7 @@ CM_ SG_ 264 P082_Edition "P082  Software issue";
 CM_ SG_ 264 P083_Calibration "P083  Calibration issue";
 CM_ BO_ 520 "ID 208:  Engine Dynamic Frame (Period time 10 ms)";
 CM_ SG_ 520 P000_Com_nEng "P000  Motordrehzahl";
+CM_ SG_ 520 P003_Com_trqActOut "P003  Actual torque";
 CM_ SG_ 520 P002_Com_rAPP "P002  rueckgerechnete PWG-Stellung";
 CM_ SG_ 520 P027_ACCtl_stLogicOut "P027  Klimakompressor Status ein/aus";
 CM_ SG_ 520 P014_Brk_stRed "P014  Redundanter Bremskontakt";
@@ -858,10 +826,10 @@ CM_ SG_ 520 P042_Inm_bCanMon "P042  CAN-Fehlerbehandlung im Startfall mit Hilfe 
 CM_ SG_ 520 P127_EGT_st_Bit30 "P127: Regeneration aid by electric consumers (engine load increase).";
 CM_ SG_ 520 P198_ActMod_trqClthTraIntv "P084  Vorweggenommenes Drehmoment";
 CM_ SG_ 694 ACC_STATUS "Indicates the operational state of the ACC system.";
-CM_ SG_ 694 CHECKSUM "CHK_INI = 0x3";
+CM_ SG_ 694 CHECKSUM "CHK_INI = 0xC";
 CM_ SG_ 694 COUNTER "This counter increments from 0 to 15 at each activation of the calculation process.";
 CM_ SG_ 757 ANGLE "asymmetric, could be init";
-CM_ SG_ 758 CHECKSUM "CHK_INI = 0x7";
+CM_ SG_ 758 CHECKSUM "CHK_INI = 0x8";
 CM_ SG_ 758 COUNTER "This counter increments from 0 to 15 at each activation of the calculation process.";
 CM_ SG_ 773 ANGLE "-565 to 560, seems like estimate and not init";
 CM_ SG_ 773 RATE_SIGN "1=moving clockwise, 0=moving anticlockwise";
@@ -1058,7 +1026,7 @@ VAL_ 1106 FRONT_WASH_STATUS 0 "Off" 1 "Wash";
 VAL_ 1106 FORCE_ACTIVATION_HAB_CMD 0 "Deactivation" 1 "Activation";
 VAL_ 1106 COCKPIT_GO_ACC_REQUEST 0 "VALUE_1" 1 "VALUE_2";
 VAL_ 1106 ACC_PROGRAM_MODE 0 "Comfort" 1 "Sport" 2 "Eco" 3 "Reserved";
-VAL_ 1173 EPS_TORQUE 127 "Invalid";
+VAL_ 1173 DRIVER_TORQUE 127 "Invalid";
 VAL_ 1173 ETAT_DA_2004 3 "Reserved" 2 "Orange LED" 1 "Red LED" 0 "No Demand";
 VAL_ 1173 ETAT_DA_DYN 3 "Invalid" 2 "Adjustable Mode" 1 "Dynamic Mode" 0 "Normal Mode";
 VAL_ 1173 ETAT_DA_2010 3 "Reserved" 2 "Orange LED" 1 "Red LED" 0 "No Demand";

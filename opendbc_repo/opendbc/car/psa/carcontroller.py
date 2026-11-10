@@ -1,10 +1,11 @@
 from opendbc.can.packer import CANPacker
 from opendbc.car import Bus, DT_CTRL, structs, make_tester_present_msg
-from opendbc.car.lateral import apply_steer_angle_limits_vm
+from opendbc.car.lateral import apply_steer_angle_limits_vm, get_max_angle_vm
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.psa.psacan import (create_lka_steering, create_resume_acc, create_disable_radar, create_enable_radar,
                                     create_HS2_DYN1_MDD_ETAT_2B6, create_HS2_DYN_MDD_ETAT_2F6)
-from opendbc.car.psa.values import CarControllerParams
+from opendbc.car.common.filter_simple import FirstOrderFilter
+from opendbc.car.psa.values import CarControllerParams, PSAFlags
 from opendbc.car.vehicle_model import VehicleModel
 from numpy import interp
 import math
@@ -43,38 +44,25 @@ RADAR_ENABLE_TIMEOUT_FRAMES = 200  # 2.0 s
 DRIVE_AWAY_FRAMES = 4   # 40 ms at 100 Hz
 LAUNCH_COMPLETE_SPEED = 0.5  # m/s, decel request released above this
 
-# The planner's cruise source is a plain P controller on speed error clipped at
-# A_CRUISE_MIN, so a 4.3 km/h set-speed step already saturates it at -1.2 m/s², and its own
-# jerk limiter runs while disengaged too — measured pinned at -1.20 for the whole second
-# before an engage frame, so engaging above the set speed landed the full request in one
-# frame (-1.22 commanded, -1.46 m/s² achieved 0.8 s later). PSA has no jerk or gradient
-# signal to hand the ESP the way Tesla, VW and Hyundai do, so the request is shaped here
-# instead, like Ford and Honda. Only the build is limited: a release still goes out in the
-# frame it is asked for, the ESP needs an atomic hand-back.
-# The rate is scheduled on how deep the request is, not on whether there is a lead: engaging
-# behind one, or dropping the set speed with one in sight, is the same comfort case as an empty
-# road. The cruise clip can never ask past -1.2 m/s², so that whole band is comfort braking and
-# builds slowly, while a request only the MPC or the model can produce — a lead braking hard, a
-# cut-in — is let through at Ford's 3.5 m/s³ (Ford notes the stock system does 5).
-# Holding the request back winds up LongControl's integrator: its error is the planner's aTarget
-# against aEgo, so it keeps integrating what we refuse to deliver, and actuators.accel arrives
-# deeper than the plan by roughly ki * 0.5 * (request / rate) — about 0.35 m/s² for a -1.2 m/s²
-# request at the slow end with kiV 0.5, twice that at kiV 1.0. It decays as soon as the ramp
-# catches up. The lower breakpoint is kept clear of that band so wind-up alone cannot unlock the
-# fast rate; raise the slow end if the overshoot is felt on the road.
-DECEL_BUILD_RATE_BP = [-2.5, -1.5]   # m/s², the request being built toward
-DECEL_BUILD_RATE_V = [0.035, 0.010]  # m/s² per 100 Hz frame, 3.5 and 1.0 m/s³
-
 # CMM (the engine ECU) takes a wheel-torque request, not an acceleration, so this map is
-# the conversion the stock radar would have done. Calibrated against measured accel from
-# the LongitudinalManeuverMode suite — see helper-scripts/accel_map.py, which imports
-# these directly so its suggestions can never be against a stale copy.
-# The -0.5 and 0.0 points were recalibrated from the ki integrator's steady-state offset
-# during engaged regen braking (~170 N.m over-braking across the -0.5..0 region): holding
-# 0 m/s² took ~170 N.m and delivering -0.5 m/s² took ~-130 N.m. Single-route evidence —
-# re-check with accel_map.py after the next drive.
-ACCEL_LOOKUP = [-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0]     # m/s²
-TORQUE_LOOKUP = [-400, -130, 170, 350, 645, 862, 1100]   # N.m
+# the conversion the stock radar would have done, for the pitch compensated accel. It is
+# speed independent: drag and the launch are left to the longitudinal integrator, see kiV
+# in interface.py. helper-scripts/accel_map.py imports these directly so its suggestions
+# can never be against a stale copy.
+ACCEL_LOOKUP = [-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 3.0]         # m/s²
+# from 208 and Corsa F drives
+TORQUE_LOOKUP = [-400, -140, 82, 375, 615, 865, 1100, 1600]       # N.m
+# from e-208 drives, close to what its stock radar sends
+TORQUE_LOOKUP_EV = [-480, -248, -15, 218, 450, 682, 915, 1380]    # N.m
+
+# The vision plan wiggles. Two poles smooth that hard and follow bigger changes quickly;
+# launches and stop and go follow the request unfiltered.
+ACCEL_SMOOTH_ERR_BP = [0.15, 0.4]  # m/s², request against the smoothed value
+ACCEL_SMOOTH_TAU_V = [8.0, 0.3]    # s per pole
+ACCEL_SMOOTH_V_BP = [5., 10.]      # m/s, no smoothing below, full smoothing above
+# braking harder than the smoothed accel pulls it down, fully from -0.5 m/s²
+ACCEL_SMOOTH_BRAKE_BP = [-0.5, -0.15]      # m/s²
+ACCEL_SMOOTH_BRAKE_MARGIN_V = [0.0, 0.1]   # m/s²
 
 
 def get_safety_CP():
@@ -100,7 +88,13 @@ class CarController(CarControllerBase):
     self.hold = False
     self.launching = False
     self.drive_away_frames = 0
-    self.accel_last = 0.0
+    self.braking = False
+    self.ev = bool(CP.flags & PSAFlags.EV)
+    # the body pitches with the car's own accel, unfiltered that feeds back into the grade compensation
+    self.pitch = FirstOrderFilter(0., 1.0, DT_CTRL)
+    self.accel_smooth = [FirstOrderFilter(0., ACCEL_SMOOTH_TAU_V[0], DT_CTRL, initialized=False) for _ in range(2)]
+    self.torque_last = None
+    self.long_frames = 0
 
     # Vehicle model used for lateral limiting
     self.VM = VehicleModel(get_safety_CP())
@@ -131,70 +125,76 @@ class CarController(CarControllerBase):
     # lateral control
     apply_angle = actuators.steeringAngleDeg
 
+    # don't take over a curve steered beyond the lateral accel limit: the limiter would clip
+    # the command below the wheel, and safety blocks the unwind from there
+    max_angle = get_max_angle_vm(max(CS.out.vEgoRaw, 1), self.VM, CarControllerParams)
+    lat_active = CC.latActive and (self.lat_active_last or abs(CS.out.steeringAngleDeg) < max_angle)
+
     # smooth engagement: blend from current wheel angle to commanded angle over ~1.0s
-    # on rising edge of latActive to avoid a lunge when the initial command is far from the wheel
+    # on rising edge of lat_active to avoid a lunge when the initial command is far from the wheel
     ENGAGE_FRAMES = 100
-    if CC.latActive and not self.lat_active_last:
+    if lat_active and not self.lat_active_last:
       self.engage_frame = 0
-    if CC.latActive and self.engage_frame < ENGAGE_FRAMES:
+    if lat_active and self.engage_frame < ENGAGE_FRAMES:
       self.engage_frame += 1
       blend = self.engage_frame / ENGAGE_FRAMES
       apply_angle = blend * apply_angle + (1 - blend) * CS.out.steeringAngleDeg
-    self.lat_active_last = CC.latActive
+    self.lat_active_last = lat_active
 
     # low-pass filter at low speeds to suppress high-frequency jitter at low speeds.
     # the reason for this happening is unknown, but it may be related to the EPS torque sensor noise or quantization.
     # the filter time constant is reduced as speed increases to avoid excessive delay at higher speeds.
-    if CC.latActive and CS.out.vEgoRaw < 5.0:
+    if lat_active and CS.out.vEgoRaw < 5.0:
       tau = interp(CS.out.vEgoRaw, [0.5, 5.0], [0.3, 0.1])
       alpha = 1 - math.exp(-DT_CTRL / tau)
       apply_angle = alpha * apply_angle + (1 - alpha) * self.apply_angle_last
 
     apply_angle = apply_steer_angle_limits_vm(apply_angle, self.apply_angle_last, CS.out.vEgoRaw,
-                                              CS.out.steeringAngleDeg, CC.latActive, CarControllerParams, self.VM)
+                                              CS.out.steeringAngleDeg, lat_active, CarControllerParams, self.VM)
 
-    # EPS disengages on steering override, activation sequence 2->3->4 to re-engage
+    # the EPS disengages on driver override, re-engage with READY -> AUTHORIZED -> ACTIVE
+    # the 508 EPS needs each step held, and ACTIVE held while it reports authorized
     # STATUS  -  0: UNAVAILABLE, 1: UNSELECTED, 2: READY, 3: AUTHORIZED, 4: ACTIVE
-    if not CC.latActive:
+    if not lat_active:
       self.status = 2
-    elif not CS.eps_active and not CS.out.steeringPressed:
-      self.status = 2 if self.status == 4 else self.status + 1
-    else:
+    elif CS.eps_state in (1, 3):  # EPS_STATE_LKA authorized, active
       self.status = 4
+    elif self.frame % CarControllerParams.STATUS_STEP == 0:
+      self.status = 2 if self.status == 4 else self.status + 1
 
-    # TUNING
-    # >=-0.5: Engine brakes only
-    # <-0.5: Add friction brakes
-    pitch = CC.orientationNED[1] if len(CC.orientationNED) == 3 else 0.0
-    accel_slope = math.sin(pitch) * 9.81
+    if len(CC.orientationNED) == 3:
+      self.pitch.update(CC.orientationNED[1])
+    accel_slope = math.sin(self.pitch.x) * 9.81
 
-    # rate-limit how fast a deceleration request may build, see DECEL_BUILD_RATE_BP.
-    # Only below zero: a positive command coming down is released in one frame, or a
-    # single-frame planner spike (longcontrol fires startAccel for one frame on any
-    # re-engage, e.g. releasing a gas override) would be walked off at the comfort
-    # rate and hold unrequested drive torque for over a second
-    if CC.longActive:
-      build_rate = interp(actuators.accel, DECEL_BUILD_RATE_BP, DECEL_BUILD_RATE_V)
-      self.accel_last = max(actuators.accel, min(self.accel_last, 0.0) - build_rate)
-      accel = self.accel_last
+    # smooth the plan, see ACCEL_SMOOTH_ERR_BP. Engaging, stops and launches start from the request
+    accel_req = min(max(actuators.accel, CarControllerParams.ACCEL_MIN), CarControllerParams.ACCEL_MAX)
+    if CC.longActive and actuators.longControlState == LongCtrlState.pid:
+      f1, f2 = self.accel_smooth
+      tau = float(interp(abs(accel_req - f2.x), ACCEL_SMOOTH_ERR_BP, ACCEL_SMOOTH_TAU_V) * interp(CS.out.vEgo, ACCEL_SMOOTH_V_BP, [0., 1.]))
+      f1.update_alpha(tau)
+      f2.update_alpha(tau)
+      f2.update(f1.update(accel_req))
+      margin = float(interp(accel_req, ACCEL_SMOOTH_BRAKE_BP, ACCEL_SMOOTH_BRAKE_MARGIN_V))
+      if f2.x > accel_req + margin:
+        f1.x = f2.x = accel_req + margin
+      accel_req = f2.x
     else:
-      # keep the limiter primed with the car's own deceleration so the next engage builds
-      # from what the car is doing, but never from a positive value, and leave the request
-      # itself at the planner's zero so the gas-override torque path is unchanged
-      self.accel_last = min(CS.out.aEgo, 0.0)
-      accel = actuators.accel
+      for f in self.accel_smooth:
+        f.initialized = False
+
+    accel = accel_req
     accel_cmd = accel + accel_slope
 
-    brake_accel = -0.5
+    # hysteresis so a request hovering at the threshold doesn't flip between torque and friction brakes
+    P = CarControllerParams
+    brake_on, brake_off = (P.EV_BRAKE_ON_ACCEL, P.EV_BRAKE_OFF_ACCEL) if self.ev else (P.BRAKE_ON_ACCEL, P.BRAKE_OFF_ACCEL)
+    brake_accel = brake_off if self.braking else brake_on
 
-    # calculate Torque
-    # 1100 N.m extrapolates the measured 434 N.m per m/s² slope to a true 2.0 m/s²; the
-    # stock radar's observed ceiling is 986 N.m (sustained, no gas), so whether the CMM
-    # accepts requests past ~1000 is unverified — check delivered accel with accel_map.py
-    torque_nm = interp(accel_cmd, ACCEL_LOOKUP, TORQUE_LOOKUP)
-    torque = max(-400, min(torque_nm, 1100))
+    torque_nm = interp(accel_cmd, ACCEL_LOOKUP, TORQUE_LOOKUP_EV if self.ev else TORQUE_LOOKUP)
+    torque = float(max(P.TORQUE_MIN, min(torque_nm, P.TORQUE_MAX)))
 
     braking = accel_cmd < brake_accel and not CS.out.gasPressed
+    self.braking = braking
     if self.CP.openpilotLongitudinalControl:
       if CC.hudControl.leadVisible and sm is not None:
         sm.update(0)
@@ -221,16 +221,20 @@ class CarController(CarControllerBase):
             self.radar_release_frame += 1
             self.radar_released = CS.radar_alive or self.radar_release_frame >= RADAR_ENABLE_TIMEOUT_FRAMES
       # disable radar ECU by setting to programming mode, see RADAR_DISABLE_FRAME
-      elif not self.radar_disabled:
-        if not self.radar_disable_sent and self.frame >= RADAR_DISABLE_FRAME:
+      elif CS.radar_alive or not self.radar_disable_sent:
+        # a knockout can get lost, and the radar comes back if its session ever ends: ask again
+        # every second for as long as it is on the bus
+        if self.frame >= RADAR_DISABLE_FRAME and (not self.radar_disable_sent or self.frame % 100 == 0):
           can_sends.append(create_disable_radar())
           self.radar_disable_sent = True
-        # only start emulating once the real radar has actually gone quiet, two
-        # ECUs transmitting 0x2B6 at once would collide on the bus
+        # only emulate while the real radar is quiet, two ECUs transmitting 0x2B6 at once
+        # would collide on the bus
         self.radar_disabled = self.radar_disable_sent and not CS.radar_alive
-      elif self.frame % 100 == 0:
-        # keep radar ECU disabled by sending tester present
-        can_sends.append(make_tester_present_msg(0x6b6, 1, suppress_response=False))
+      else:
+        self.radar_disabled = True
+        if self.frame % 100 == 0:
+          # keep radar ECU disabled by sending tester present
+          can_sends.append(make_tester_present_msg(0x6b6, 1, suppress_response=False))
 
       # Highest torque seen without gas input: ~1000
       # Lowest torque seen without break mode: -560 (but only when transitioning from brake to accel mode, else -248)
@@ -282,9 +286,20 @@ class CarController(CarControllerBase):
       drive_away = self.drive_away_frames > 0
       standstill_hold = self.hold or drive_away
 
+      # an EV motor answers a torque step within a frame, so the request is rate limited while it
+      # is the torque that drives the car; the launch keeps its step, the ESP is still in control
+      self.long_frames = self.long_frames + 1 if CC.longActive else 0
+      torque_driving = CC.longActive and not decel_active and not standstill_hold and not self.launching
+      if self.ev and long_enabled and not decel_active and not standstill_hold:
+        if torque_driving and self.torque_last is not None:
+          torque = min(max(torque, self.torque_last - P.EV_TORQUE_RATE), self.torque_last + P.EV_TORQUE_RATE)
+        if self.long_frames < P.EV_LIFT_OFF_FRAMES:
+          torque = max(torque, P.EV_LIFT_OFF_TORQUE_MIN)
+      self.torque_last = torque if torque_driving else None
+
       # stand in for the radar for exactly as long as it is off the bus
       if self.radar_disabled and not self.radar_released and self.frame % 2 == 0:
-        can_sends.append(create_HS2_DYN1_MDD_ETAT_2B6(self.packer, self.frame // 2, actuators.accel, decel_active, long_enabled,
+        can_sends.append(create_HS2_DYN1_MDD_ETAT_2B6(self.packer, self.frame // 2, accel, decel_active, long_enabled,
                                                       CS.out.gasPressed, CS.out.brakePressed, CS.out.standstill, torque,
                                                       standstill_hold, self.launching))
         can_sends.append(create_HS2_DYN_MDD_ETAT_2F6(self.packer, decel_active or standstill_hold or self.launching,
@@ -300,7 +315,7 @@ class CarController(CarControllerBase):
         counter = (msg['COUNTER'] + 1) % 16
         can_sends.append(create_resume_acc(self.packer, counter, status, msg))
 
-    can_sends.append(create_lka_steering(self.packer, CC.latActive, apply_angle, self.status, CS.lka_drive_mode))
+    can_sends.append(create_lka_steering(self.packer, lat_active, apply_angle, self.status, CS.lka_drive_mode))
     self.apply_angle_last = apply_angle
 
     new_actuators = actuators.as_builder()

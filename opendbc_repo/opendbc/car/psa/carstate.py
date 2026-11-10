@@ -2,7 +2,7 @@ import copy
 from opendbc.car import structs, Bus
 from opendbc.can.parser import CANParser
 from opendbc.car.common.conversions import Conversions as CV
-from opendbc.car.psa.values import CAR, DBC, CarControllerParams
+from opendbc.car.psa.values import DBC, CarControllerParams, EpsState, PSAFlags
 from opendbc.car.interfaces import CarStateBase
 
 GearShifter = structs.CarState.GearShifter
@@ -21,6 +21,9 @@ RADAR_MSG = 'HS2_DYN1_MDD_ETAT_2B6'
 # gap, and holds the total silence to ~70 ms.
 RADAR_TIMEOUT_FRAMES = 6
 
+# the CMM briefly drops the ACC torque when switching to the brakes
+ACC_TORQUE_LOST_FRAMES = 100
+
 # SPEED_SETPOINT reads 2 km/h below the set speed shown on the dash — driver-observed, and the
 # same at every set speed. The car regulates to the value on the bus, absorbing the speedometer's
 # over-read, so that value stays the control target and only the cluster display is corrected;
@@ -33,6 +36,7 @@ class CarState(CarStateBase):
     self.radar_alive = False
     self.radar_last_ts = 0
     self.radar_stale_frames = 0
+    self.acc_torque_lost_frames = 0
 
   def update(self, can_parsers) -> structs.CarState:
     cp = can_parsers[Bus.main]
@@ -53,22 +57,19 @@ class CarState(CarStateBase):
     # gas
     ret.gasPressed = cp_cam.vl['DRIVER']['GAS_PEDAL'] > 0
 
-    # brake
-    ret.brakePressed = bool(cp_cam.vl['Dat_BSI']['P013_MainBrake'])
+    # brake, the ESP also sees light presses that the BSI brake switch (Dat_BSI P013_MainBrake) misses
+    ret.brakePressed = cp_adas.vl['HS2_DYN_UCF_MDD_32D']['APPUI_FREIN_RECONSTRUIT'] == 2
     ret.parkingBrake = cp.vl['Dyn_EasyMove']['P337_Com_stPrkBrk'] == 1 # 0: disengaged, 1: engaged, 3: brake actuator moving
 
     # steering wheel
-    STEERING_ALT_BUS = {
-      CAR.PSA_PEUGEOT_208: cp.vl,
-      CAR.PSA_PEUGEOT_508: cp_cam.vl,
-    }
-    bus = STEERING_ALT_BUS[self.CP.carFingerprint]
-    ret.steeringAngleDeg = bus['STEERING_ALT']['ANGLE'] # EPS
-    ret.steeringRateDeg  = bus['STEERING_ALT']['RATE'] * (1 - 2 * bus['STEERING_ALT']['RATE_SIGN']) # convert [0,1] to [1,-1] EPS: rot. speed * rot. sign
+    cp_eps = cp_cam if self.CP.flags & PSAFlags.EPS_CAM_BUS else cp
+    ret.steeringAngleDeg = cp_eps.vl['STEERING_ALT']['ANGLE']  # EPS
+    ret.steeringRateDeg = cp_eps.vl['STEERING_ALT']['RATE'] * (1 - 2 * cp_eps.vl['STEERING_ALT']['RATE_SIGN'])  # RATE_SIGN [0,1] to [1,-1]
     ret.steeringTorque = cp.vl['STEERING']['DRIVER_TORQUE']
-    ret.steeringTorqueEps = cp.vl['IS_DAT_DIRA']['EPS_TORQUE']
     ret.steeringPressed = self.update_steering_pressed(abs(ret.steeringTorque) > CarControllerParams.STEER_DRIVER_ALLOWANCE, 5)
-    self.eps_active = cp.vl['IS_DAT_DIRA']['EPS_STATE_LKA'] == 3 # 0: Unauthorized, 1: Authorized, 2: Available, 3: Active, 4: Defect
+    self.eps_state = cp.vl['IS_DAT_DIRA']['EPS_STATE_LKA']
+    self.eps_active = self.eps_state == EpsState.ACTIVE
+    ret.steerFaultTemporary = self.eps_state == EpsState.DEFECT
 
     # cruise
     setpoint = cp_adas.vl['HS2_DAT_MDD_CMD_452']['SPEED_SETPOINT']  # set to 255 when ACC is off
@@ -79,9 +80,12 @@ class CarState(CarStateBase):
     # show what the dash shows, see CLUSTER_SETPOINT_OFFSET; with ACC off there is nothing to offset
     ret.cruiseState.speedCluster = (setpoint + CLUSTER_SETPOINT_OFFSET) * CV.KPH_TO_MS if setpoint < 255 else ret.cruiseState.speed
     ret.cruiseState.enabled = cp_adas.vl['HS2_DAT_MDD_CMD_452']['RVV_ACC_ACTIVATION_REQ'] == 1
-    ret.cruiseState.available = True # not available for CC-only
-    ret.cruiseState.nonAdaptive = False # not available for CC-only
-    ret.cruiseState.standstill = False # not available for CC-only
+    # the stock radar reports ACC_STATUS 2 (inhibited) on every brake press, so it cannot stand in for available
+    ret.cruiseState.available = True
+    # 0: None, 1: CC, 2: Limiter, 3: ACC. None is just ACC switched off, only plain cruise and the limiter are the wrong mode
+    ret.cruiseState.nonAdaptive = cp_adas.vl['HS2_DAT_MDD_CMD_452']['LONGITUDINAL_REGULATION_TYPE'] in (1, 2)
+    # with openpilot long the hold is ours, see the standstill sequence in carcontroller.py
+    ret.cruiseState.standstill = not self.CP.openpilotLongitudinalControl and bool(cp_adas.vl['HS2_DYN_UCF_MDD_32D']['VEHICLE_STANDSTILL'])
     ret.accFaulted = cp_adas.vl['HS2_DYN_UCF_MDD_32D']['ACC_ETAT_DECEL_OR_ESP_STATUS'] == 3
     # resume request
     self.hs2_dat_mdd_cmd_452 = copy.copy(cp_adas.vl['HS2_DAT_MDD_CMD_452'])
@@ -96,6 +100,16 @@ class CarState(CarStateBase):
     else:
       self.radar_stale_frames += 1
     self.radar_alive = radar_ts != 0 and self.radar_stale_frames < RADAR_TIMEOUT_FRAMES
+
+    # The CMM can stop taking our torque for the rest of the drive. It drops ACC_GO_RELATED when it
+    # does, and its own pedal reading shows a gas press before DRIVER does. Under the emulation the
+    # flag was never down without gas for longer than 0.12 s, measured over four engaged drives
+    # including standstill holds, so a second of it is the CMM having let go.
+    gas_cmm = cp.vl['Dyn_CMM']['P002_Com_rAPP'] > 0
+    acc_torque_lost = (self.CP.openpilotLongitudinalControl and not self.radar_alive and ret.cruiseState.enabled and
+                       not (ret.gasPressed or gas_cmm) and cp_adas.vl['NEW_MSG_318']['ACC_GO_RELATED'] == 0)
+    self.acc_torque_lost_frames = self.acc_torque_lost_frames + 1 if acc_torque_lost else 0
+    ret.accFaulted = ret.accFaulted or self.acc_torque_lost_frames > ACC_TORQUE_LOST_FRAMES
 
     # gear
     if bool(cp_cam.vl['Dat_BSI']['P103_Com_bRevGear']):
@@ -124,6 +138,6 @@ class CarState(CarStateBase):
       Bus.main: CANParser(DBC[CP.carFingerprint][Bus.pt], [], 0),
       # nan frequency: openpilot longitudinal deliberately silences the radar ECU,
       # so a missing 0x2B6 must not invalidate the ADAS bus
-      Bus.adas: CANParser(DBC[CP.carFingerprint][Bus.pt], [(RADAR_MSG, float('nan'))], 1),
+      Bus.adas: CANParser(DBC[CP.carFingerprint][Bus.pt], [(RADAR_MSG, float('nan')), ('NEW_MSG_318', float('nan'))], 1),
       Bus.cam: CANParser(DBC[CP.carFingerprint][Bus.pt], [], 2),
     }
