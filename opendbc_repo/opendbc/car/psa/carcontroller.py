@@ -52,8 +52,10 @@ LAUNCH_COMPLETE_SPEED = 0.5  # m/s, decel request released above this
 ACCEL_LOOKUP = [-1.0, -0.5, 0.0, 0.5, 1.0, 1.5, 2.0, 3.0]         # m/s²
 # from 208 and Corsa F drives
 TORQUE_LOOKUP = [-400, -140, 82, 375, 615, 865, 1100, 1600]       # N.m
-# from e-208 drives, close to what its stock radar sends
-TORQUE_LOOKUP_EV = [-480, -248, -15, 218, 450, 682, 915, 1380]    # N.m
+# Calibrated on an e-208 against measured accel from the LongitudinalManeuverMode suite; holding
+# 0 m/s² took ~170 N.m and delivering -0.5 m/s² took ~-130 N.m, so unlike the map above this one
+# has typical drag built in. The 3.0 point extends the measured 434 N.m per m/s² slope past 2.0.
+TORQUE_LOOKUP_EV = [-400, -130, 170, 350, 645, 862, 1100, 1534]   # N.m
 
 # The vision plan wiggles. Two poles smooth that hard and follow bigger changes quickly;
 # launches and stop and go follow the request unfiltered.
