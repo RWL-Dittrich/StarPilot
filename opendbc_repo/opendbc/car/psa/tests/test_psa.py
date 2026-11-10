@@ -474,7 +474,7 @@ class TestPsaBrakeOverride(PsaEmulationTest):
 
 
 class TestPsaBrakeRequest(PsaEmulationTest):
-  """The brake request is the smoothed plan, with no rate limit of its own on the way in or out."""
+  """The brake request is the plan, with no rate limit of its own on the way in or out."""
 
   def test_brake_request_goes_out_in_the_frame_it_is_asked_for(self):
     self.knock_out()
@@ -545,27 +545,6 @@ class TestPsaEv(PsaEmulationTest):
     for _ in range(P.EV_LIFT_OFF_FRAMES + 100):
       self.step(long_active=True, accel=accel, v_ego=15.0)
     self.assertLess(self.emulated(long_active=True, accel=accel, v_ego=15.0)['GMP_WHEEL_TORQUE'], 0)
-
-
-class TestPsaAccelSmoothing(PsaEmulationTest):
-  def test_plan_wiggle_is_smoothed_and_hard_braking_is_not(self):
-    self.knock_out()
-    kwargs = dict(long_active=True, v_ego=15.0, long_state=LongCtrlState.pid)
-    before = self.emulated(accel=0.5, **kwargs)['GMP_WHEEL_TORQUE']
-    for _ in range(20):
-      self.step(accel=0.6, **kwargs)
-    after = self.emulated(accel=0.6, **kwargs)['GMP_WHEEL_TORQUE']
-    self.assertLess(after - before, 5, "a 0.1 m/s² wiggle went straight to the torque request")
-
-    self.step(accel=-2.0, **kwargs)
-    self.assertAlmostEqual(self.CI.CC.accel_smooth[1].x, -2.0, msg="the filter held back a hard brake request")
-
-  def test_low_speed_follows_the_request(self):
-    self.knock_out()
-    kwargs = dict(long_active=True, v_ego=3.0, long_state=LongCtrlState.pid)
-    self.step(accel=0.5, **kwargs)
-    self.step(accel=1.0, **kwargs)
-    self.assertAlmostEqual(self.CI.CC.accel_smooth[1].x, 1.0)
 
 
 class TestPsaLateralEngage(unittest.TestCase):

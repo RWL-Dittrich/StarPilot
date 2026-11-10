@@ -50,8 +50,8 @@ class CarControllerParams:
     390,  # deg, EPS max
     MAX_LATERAL_ACCEL=MAX_LATERAL_ACCEL,
     MAX_LATERAL_JERK=MAX_LATERAL_JERK,
-    # 75 deg/s, the EPS faults from ~90 deg/s at low speed
-    MAX_ANGLE_RATE=0.75,  # deg/10ms frame
+    # limit angle rate for low speed comfort, matches previous breakpoint-based rate limits at a standstill
+    MAX_ANGLE_RATE=4,  # deg/10ms frame
   )
   STEER_DRIVER_ALLOWANCE = 0.5  # Driver intervention threshold, Nm
 

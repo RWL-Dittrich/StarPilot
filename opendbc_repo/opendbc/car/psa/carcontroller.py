@@ -57,15 +57,6 @@ TORQUE_LOOKUP = [-400, -140, 82, 375, 615, 865, 1100, 1600]       # N.m
 # has typical drag built in. The 3.0 point extends the measured 434 N.m per m/s² slope past 2.0.
 TORQUE_LOOKUP_EV = [-400, -130, 170, 350, 645, 862, 1100, 1534]   # N.m
 
-# The vision plan wiggles. Two poles smooth that hard and follow bigger changes quickly;
-# launches and stop and go follow the request unfiltered.
-ACCEL_SMOOTH_ERR_BP = [0.15, 0.4]  # m/s², request against the smoothed value
-ACCEL_SMOOTH_TAU_V = [8.0, 0.3]    # s per pole
-ACCEL_SMOOTH_V_BP = [5., 10.]      # m/s, no smoothing below, full smoothing above
-# braking harder than the smoothed accel pulls it down, fully from -0.5 m/s²
-ACCEL_SMOOTH_BRAKE_BP = [-0.5, -0.15]      # m/s²
-ACCEL_SMOOTH_BRAKE_MARGIN_V = [0.0, 0.1]   # m/s²
-
 
 def get_safety_CP():
   # We use the PSA_PEUGEOT_208 platform for lateral limiting to match safety
@@ -94,7 +85,6 @@ class CarController(CarControllerBase):
     self.ev = bool(CP.flags & PSAFlags.EV)
     # the body pitches with the car's own accel, unfiltered that feeds back into the grade compensation
     self.pitch = FirstOrderFilter(0., 1.0, DT_CTRL)
-    self.accel_smooth = [FirstOrderFilter(0., ACCEL_SMOOTH_TAU_V[0], DT_CTRL, initialized=False) for _ in range(2)]
     self.torque_last = None
     self.long_frames = 0
 
@@ -168,23 +158,9 @@ class CarController(CarControllerBase):
       self.pitch.update(CC.orientationNED[1])
     accel_slope = math.sin(self.pitch.x) * 9.81
 
-    # smooth the plan, see ACCEL_SMOOTH_ERR_BP. Engaging, stops and launches start from the request
-    accel_req = min(max(actuators.accel, CarControllerParams.ACCEL_MIN), CarControllerParams.ACCEL_MAX)
-    if CC.longActive and actuators.longControlState == LongCtrlState.pid:
-      f1, f2 = self.accel_smooth
-      tau = float(interp(abs(accel_req - f2.x), ACCEL_SMOOTH_ERR_BP, ACCEL_SMOOTH_TAU_V) * interp(CS.out.vEgo, ACCEL_SMOOTH_V_BP, [0., 1.]))
-      f1.update_alpha(tau)
-      f2.update_alpha(tau)
-      f2.update(f1.update(accel_req))
-      margin = float(interp(accel_req, ACCEL_SMOOTH_BRAKE_BP, ACCEL_SMOOTH_BRAKE_MARGIN_V))
-      if f2.x > accel_req + margin:
-        f1.x = f2.x = accel_req + margin
-      accel_req = f2.x
-    else:
-      for f in self.accel_smooth:
-        f.initialized = False
-
-    accel = accel_req
+    # the plan goes out unfiltered: a low-pass here sat inside the planner's loop, 1.6-2.7 s of lag
+    # between the request and the torque swung the gap to a lead by ~15 m
+    accel = min(max(actuators.accel, CarControllerParams.ACCEL_MIN), CarControllerParams.ACCEL_MAX)
     accel_cmd = accel + accel_slope
 
     # hysteresis so a request hovering at the threshold doesn't flip between torque and friction brakes
