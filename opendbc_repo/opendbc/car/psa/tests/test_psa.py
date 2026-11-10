@@ -588,7 +588,8 @@ class TestPsaLateralEngage(unittest.TestCase):
     halfway = [self.lka(0.0, driver_torque=(lo + hi) / 2)['TORQUE_FACTOR'] for _ in range(100)]
     self.assertEqual(hands_off[-1], P.TORQUE_FACTOR_MAX)
     self.assertEqual(pushing[-1], P.TORQUE_FACTOR_MIN)
-    self.assertEqual(halfway[-1], (P.TORQUE_FACTOR_MAX + P.TORQUE_FACTOR_MIN) / 2)
+    self.assertEqual(halfway[-1], (P.TORQUE_FACTOR_MAX + P.TORQUE_FACTOR_MIN) // 2)
+    self.assertGreater(P.TORQUE_FACTOR_MIN, 0, "safety reads a zero factor as inactive")
     steps = np.diff(hands_off + pushing + halfway)
     self.assertLessEqual(max(steps), P.TORQUE_FACTOR_STEP_UP, "assist rose faster than the ramp")
     self.assertGreaterEqual(min(steps), -P.TORQUE_FACTOR_STEP_DOWN, "assist fell faster than the ramp")

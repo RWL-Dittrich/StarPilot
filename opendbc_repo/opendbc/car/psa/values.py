@@ -59,15 +59,18 @@ class CarControllerParams:
 
   # EPS assist authority (TORQUE_FACTOR, percent), reduced as the driver pushes on the wheel so an
   # override meets a yielding wheel, the way VW MEB scales its steering power.
-  # Untested on the car: 100 is the only value the EPS is known to accept, raise TORQUE_FACTOR_MIN
-  # to 100 to get the fixed behaviour back.
+  # Raise TORQUE_FACTOR_MIN to 100 to get the fixed full assist back.
   TORQUE_FACTOR_MAX = 100
-  TORQUE_FACTOR_MIN = 20
+  # never 0 while steering: safety reads 0 as inactive and then wants the command on the measured angle
+  TORQUE_FACTOR_MIN = 5
   # At full assist the EPS leaves LKA on driver torque alone: never below 2.0 Nm (202 presses, wheel up to
   # 117 deg off the command), 4 of 21 at 2.0-2.5 Nm, 50 of 52 above 2.5 Nm, and typically 0.1-0.3 s after
   # the driver passes 1 Nm. So the assist has to be at its minimum before 2.0 Nm and get there that fast.
-  TORQUE_FACTOR_DRIVER_BP = [1.0, 2.0]  # Nm of driver torque, max to min
-  TORQUE_FACTOR_STEP_DOWN = 5  # per frame, full range in 0.16 s
+  # Lower assist does make the wheel yield: at 1.5-2.0 Nm it sat a median 5 deg off the command at 100,
+  # 9 deg at 45-89 and 23 deg below 45. It does not move the dropout, which stayed at ~2.5 Nm with the
+  # assist at 20. With [1.0, 2.0] Nm and 5 per frame, half the dropouts came before the assist was down.
+  TORQUE_FACTOR_DRIVER_BP = [0.5, 1.5]  # Nm of driver torque, max to min
+  TORQUE_FACTOR_STEP_DOWN = 10  # per frame, full range in 0.08 s
   TORQUE_FACTOR_STEP_UP = 2  # per frame, full range in 0.4 s
 
   # Below BRAKE_ON_ACCEL the ESP's friction brakes take over from the torque request, and stay on
