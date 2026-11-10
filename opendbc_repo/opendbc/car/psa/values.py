@@ -50,10 +50,25 @@ class CarControllerParams:
     390,  # deg, EPS max
     MAX_LATERAL_ACCEL=MAX_LATERAL_ACCEL,
     MAX_LATERAL_JERK=MAX_LATERAL_JERK,
-    # limit angle rate for low speed comfort, matches previous breakpoint-based rate limits at a standstill
-    MAX_ANGLE_RATE=4,  # deg/10ms frame
+    # About what the EPS turns the wheel at, hands off and well behind the command: 100-140 deg/s at
+    # 20-30 km/h, 110-180 deg/s at 10-20 km/h. A command faster than that only runs ahead of the wheel,
+    # by up to 120 deg in a tight corner at 4 deg/frame. Binds below ~28 km/h, the jerk limit above.
+    MAX_ANGLE_RATE=1.5,  # deg/10ms frame
   )
   STEER_DRIVER_ALLOWANCE = 0.5  # Driver intervention threshold, Nm
+
+  # EPS assist authority (TORQUE_FACTOR, percent), reduced as the driver pushes on the wheel so an
+  # override meets a yielding wheel, the way VW MEB scales its steering power.
+  # Untested on the car: 100 is the only value the EPS is known to accept, raise TORQUE_FACTOR_MIN
+  # to 100 to get the fixed behaviour back.
+  TORQUE_FACTOR_MAX = 100
+  TORQUE_FACTOR_MIN = 20
+  # At full assist the EPS leaves LKA on driver torque alone: never below 2.0 Nm (202 presses, wheel up to
+  # 117 deg off the command), 4 of 21 at 2.0-2.5 Nm, 50 of 52 above 2.5 Nm, and typically 0.1-0.3 s after
+  # the driver passes 1 Nm. So the assist has to be at its minimum before 2.0 Nm and get there that fast.
+  TORQUE_FACTOR_DRIVER_BP = [1.0, 2.0]  # Nm of driver torque, max to min
+  TORQUE_FACTOR_STEP_DOWN = 5  # per frame, full range in 0.16 s
+  TORQUE_FACTOR_STEP_UP = 2  # per frame, full range in 0.4 s
 
   # Below BRAKE_ON_ACCEL the ESP's friction brakes take over from the torque request, and stay on
   # until the request rises above BRAKE_OFF_ACCEL, so a request hovering at the threshold doesn't

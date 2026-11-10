@@ -69,6 +69,7 @@ class CarController(CarControllerBase):
     super().__init__(dbc_names, CP)
     self.packer = CANPacker(dbc_names[Bus.main])
     self.apply_angle_last = 0
+    self.torque_factor = 0
     self.lat_active_last = False
     self.engage_frame = 0
     self.radar_disable_sent = False
@@ -144,10 +145,21 @@ class CarController(CarControllerBase):
     apply_angle = apply_steer_angle_limits_vm(apply_angle, self.apply_angle_last, CS.out.vEgoRaw,
                                               CS.out.steeringAngleDeg, lat_active, CarControllerParams, self.VM)
 
+    # full EPS assist hands-off, less of it the harder the driver pushes on the wheel, ramped both ways.
+    # After lateral goes inactive the assist winds down to zero with the command on the wheel (the
+    # limiter above returns the measured angle), the way VW MEB winds its steering power down.
+    # safety only lets a falling factor through once controls are off, see psa.h
+    P_LAT = CarControllerParams
+    if lat_active:
+      target = int(interp(abs(CS.out.steeringTorque), P_LAT.TORQUE_FACTOR_DRIVER_BP, [P_LAT.TORQUE_FACTOR_MAX, P_LAT.TORQUE_FACTOR_MIN]))
+      self.torque_factor = min(max(target, self.torque_factor - P_LAT.TORQUE_FACTOR_STEP_DOWN), self.torque_factor + P_LAT.TORQUE_FACTOR_STEP_UP)
+    else:
+      self.torque_factor = max(self.torque_factor - P_LAT.TORQUE_FACTOR_STEP_DOWN, 0)
+
     # the EPS disengages on driver override, re-engage with READY -> AUTHORIZED -> ACTIVE
     # the 508 EPS needs each step held, and ACTIVE held while it reports authorized
     # STATUS  -  0: UNAVAILABLE, 1: UNSELECTED, 2: READY, 3: AUTHORIZED, 4: ACTIVE
-    if not lat_active:
+    if self.torque_factor == 0:
       self.status = 2
     elif CS.eps_state in (1, 3):  # EPS_STATE_LKA authorized, active
       self.status = 4
@@ -293,7 +305,7 @@ class CarController(CarControllerBase):
         counter = (msg['COUNTER'] + 1) % 16
         can_sends.append(create_resume_acc(self.packer, counter, status, msg))
 
-    can_sends.append(create_lka_steering(self.packer, lat_active, apply_angle, self.status, CS.lka_drive_mode))
+    can_sends.append(create_lka_steering(self.packer, self.torque_factor, apply_angle, self.status, CS.lka_drive_mode))
     self.apply_angle_last = apply_angle
 
     new_actuators = actuators.as_builder()

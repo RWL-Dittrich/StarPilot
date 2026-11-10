@@ -34,6 +34,7 @@
            {PSA_DRIVER, PSA_CAM_BUS, 7, 10U, .ignore_checksum = true, .ignore_counter = true, .ignore_quality_flag = true}, { 0 }}},  /* 7 bytes on the 508 */         \
 
 static uint32_t psa_eps_bus = PSA_MAIN_BUS;
+static int psa_torque_factor_last = 0;
 
 static uint8_t psa_get_counter(const CANPacket_t *msg) {
   uint8_t cnt = 0;
@@ -162,8 +163,14 @@ static bool psa_tx_hook(const CANPacket_t *msg) {
   if (msg->addr == PSA_LANE_KEEP_ASSIST) {
     // SET_ANGLE
     int desired_angle = to_signed((msg->data[6] << 6) | ((msg->data[7] & 0xFCU) >> 2), 14);
-    // TORQUE_FACTOR
-    bool lka_active = ((msg->data[5] & 0xFEU) >> 1) == 100U;
+    // TORQUE_FACTOR, any assist at all steers the car
+    int torque_factor = (msg->data[5] & 0xFEU) >> 1;
+    // except while it winds down after lateral goes inactive: the assist may only fall, with the
+    // command held on the measured angle, so it ends within a second and asks for no steering
+    bool on_wheel = !steer_angle_cmd_inactive_check(desired_angle, PSA_STEERING_LIMITS.max_angle);
+    bool winddown = (torque_factor < psa_torque_factor_last) && on_wheel;
+    bool lka_active = (torque_factor != 0) && !winddown;
+    psa_torque_factor_last = torque_factor;
 
     if (steer_angle_cmd_checks_vm(desired_angle, lka_active, PSA_STEERING_LIMITS, PSA_STEERING_PARAMS)) {
       tx = false;
@@ -219,6 +226,8 @@ static safety_config psa_init(uint16_t param) {
   };
 
   psa_eps_bus = GET_FLAG(param, PSA_PARAM_EPS_CAM_BUS) ? PSA_CAM_BUS : PSA_MAIN_BUS;
+
+  psa_torque_factor_last = 0;
 
   safety_config ret = BUILD_SAFETY_CFG(psa_rx_checks, PSA_TX_MSGS);
   if (psa_eps_bus == PSA_CAM_BUS) {

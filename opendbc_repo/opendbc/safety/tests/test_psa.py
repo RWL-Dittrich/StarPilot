@@ -142,6 +142,33 @@ class TestPsaSafetyBase(common.CarSafetyTest, common.AngleSteeringSafetyTest):
     # We properly test lateral acceleration and jerk below
     pass
 
+  def test_partial_torque_factor_is_active(self):
+    # the assist is scaled with the steering demand, any non-zero factor steers the car
+    for factor in (1, 50, 127):
+      msg = self.packer.make_can_msg_safety("LANE_KEEP_ASSIST", self.MAIN_BUS, {"SET_ANGLE": 0, "TORQUE_FACTOR": factor})
+      self.safety.set_controls_allowed(False)
+      self.assertFalse(self._tx(msg))
+      self.safety.set_controls_allowed(True)
+      self.assertTrue(self._tx(msg))
+
+  def test_torque_factor_winddown(self):
+    # after a disengage the assist may fall to zero with the command on the wheel, nothing else
+    def msg(factor, angle=0):
+      return self.packer.make_can_msg_safety("LANE_KEEP_ASSIST", self.MAIN_BUS, {"SET_ANGLE": angle, "TORQUE_FACTOR": factor})
+
+    for _ in range(6):
+      self._rx(self._angle_meas_msg(0))
+    self.safety.set_controls_allowed(True)
+    self.assertTrue(self._tx(msg(100)))
+    self.safety.set_controls_allowed(False)
+    self.assertTrue(self._tx(msg(98)))
+    self.assertFalse(self._tx(msg(98)), "assist held with controls off")
+    self.assertFalse(self._tx(msg(99)), "assist rose with controls off")
+    self.assertFalse(self._tx(msg(90, angle=5)), "wind-down steered off the wheel")
+    for factor in range(88, -1, -2):
+      self.assertTrue(self._tx(msg(factor)))
+    self.assertFalse(self._tx(msg(2)), "assist came back with controls off")
+
   def _round_speed_can(self, speed):
     # match wheel speed signal rounding on CAN (0.01 km/h factor)
     return round_speed(away_round(speed * 3.6 / 0.01) * 0.01 / 3.6)

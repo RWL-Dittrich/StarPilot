@@ -553,13 +553,14 @@ class TestPsaLateralEngage(unittest.TestCase):
     self.parser = CANParser('psa_aee2010_r3', [('LANE_KEEP_ASSIST', 0)], 0)
     self.now_nanos = 0
 
-  def lka(self, angle, eps_state=0):
+  def lka(self, angle, eps_state=0, driver_torque=0.0, lat_active=True):
     CC = structs.CarControl()
-    CC.latActive = True
+    CC.latActive = lat_active
     CC.actuators.steeringAngleDeg = angle
     self.CI.update([])
     self.CI.CS.out.vEgoRaw = 25.0
     self.CI.CS.out.steeringAngleDeg = angle
+    self.CI.CS.out.steeringTorque = driver_torque
     self.CI.CS.eps_state = eps_state
     _, can_sends = self.CI.apply(CC.as_reader(), self.now_nanos)
     self.now_nanos += int(DT_CTRL * 1e9)
@@ -567,7 +568,30 @@ class TestPsaLateralEngage(unittest.TestCase):
     return self.parser.vl['LANE_KEEP_ASSIST']
 
   def lka_active(self, angle):
-    return self.lka(angle)['TORQUE_FACTOR'] == 100
+    return self.lka(angle)['TORQUE_FACTOR'] > 0
+
+  def test_torque_factor_winds_down_after_disengage(self):
+    for _ in range(100):
+      self.lka(0.0, eps_state=3)
+    # the wheel has moved on by the time lateral drops: the command follows it, the assist ramps out
+    frames = [self.lka(7.0, eps_state=3, lat_active=False) | {} for _ in range(60)]
+    factors = [f['TORQUE_FACTOR'] for f in frames]
+    self.assertEqual(factors[:3], [100 - n * P.TORQUE_FACTOR_STEP_DOWN for n in (1, 2, 3)])
+    self.assertEqual(factors[-1], 0)
+    self.assertTrue(all(abs(f['SET_ANGLE'] - 7.0) < 0.05 for f in frames), "wind-down command left the measured angle")
+    self.assertTrue(all(f['STATUS'] == (4 if f['TORQUE_FACTOR'] else 2) for f in frames))
+
+  def test_torque_factor_yields_to_the_driver(self):
+    lo, hi = P.TORQUE_FACTOR_DRIVER_BP
+    hands_off = [0] + [self.lka(0.0)['TORQUE_FACTOR'] for _ in range(100)]
+    pushing = [self.lka(0.0, driver_torque=-hi)['TORQUE_FACTOR'] for _ in range(100)]
+    halfway = [self.lka(0.0, driver_torque=(lo + hi) / 2)['TORQUE_FACTOR'] for _ in range(100)]
+    self.assertEqual(hands_off[-1], P.TORQUE_FACTOR_MAX)
+    self.assertEqual(pushing[-1], P.TORQUE_FACTOR_MIN)
+    self.assertEqual(halfway[-1], (P.TORQUE_FACTOR_MAX + P.TORQUE_FACTOR_MIN) / 2)
+    steps = np.diff(hands_off + pushing + halfway)
+    self.assertLessEqual(max(steps), P.TORQUE_FACTOR_STEP_UP, "assist rose faster than the ramp")
+    self.assertGreaterEqual(min(steps), -P.TORQUE_FACTOR_STEP_DOWN, "assist fell faster than the ramp")
 
   def test_eps_activation_steps_are_held(self):
     # the EPS stays unauthorized: READY -> AUTHORIZED -> ACTIVE -> READY, each held for STATUS_STEP frames
