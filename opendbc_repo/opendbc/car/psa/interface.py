@@ -4,8 +4,6 @@ from opendbc.car.psa.carcontroller import CarController
 from opendbc.car.psa.carstate import CarState
 from opendbc.car.psa.values import PSAFlags, PSASafetyFlags
 
-TransmissionType = structs.CarParams.TransmissionType
-
 
 class CarInterface(CarInterfaceBase):
   CarState = CarState
@@ -29,14 +27,7 @@ class CarInterface(CarInterfaceBase):
 
     ret.dashcamOnly = False
 
-    # The planner leads corners by lagd's liveDelay, whose prior is steerActuatorDelay
-    # + 0.2 and which only learns above 80 km/h (MIN_VEGO), so on this car the prior
-    # dominates. Measured full-chain delay (desired curvature -> yaw, NCC over 550 s of
-    # clean engaged driving, angle-limiter frames excluded) peaks at ~0.30 s; the EPS
-    # alone is ~0.15 s command->wheel. 0.10 + 0.2 puts the prior on the measured value.
-    # Earlier values over-led and cut corner apexes: 0.35 badly, 0.25 still by ~0.12 s.
-    # Naive NCC on this car overstates the lag: the angle limiter couples the command to
-    # the measured angle in the same frame, which is where the old 0.25 figure came from.
+    # liveDelay only learns above 80 km/h, so this prior dominates. Measured ~0.30 s desired curvature to yaw
     ret.steerActuatorDelay = 0.10
     ret.steerLimitTimer = 0.1
     ret.steerAtStandstill = True
@@ -44,11 +35,7 @@ class CarInterface(CarInterfaceBase):
     ret.steerControlType = structs.CarParams.SteerControlType.angle
     ret.radarUnavailable = True
 
-    # Wheel speeds read low: over a drive above 8 m/s, GPS speed (speedAccuracy < 1 m/s) was a
-    # median 1.1% higher at 17-22 m/s and 1.3% higher above 27 m/s. Left at 1.0 the resulting
-    # vEgo also disagrees with the model's own speed estimate, which radard subtracts from the
-    # vision lead's speed, so the lead reads ~0.4 m/s slower than it is and the MPC holds a
-    # target gap several metres too large.
+    # wheel speeds read ~1% below GPS speed
     ret.wheelSpeedFactor = 1.01
 
     ret.alphaLongitudinalAvailable = True
@@ -56,13 +43,11 @@ class CarInterface(CarInterfaceBase):
     if alpha_long:
       ret.safetyConfigs[0].safetyParam |= PSASafetyFlags.LONG_CONTROL.value
 
-    # long tuning
     # 0.3 s on torque, 0.4-0.7 s on the friction brakes
     ret.longitudinalActuatorDelay = 0.4
 
-    # the integrator picks up drag and the launch, the torque map is speed independent
+    # the integrator picks up drag and the launch, less of it on an EV
     ret.longitudinalTuning.kiBP = [0., 4., 13., 20.]
-    # an EV lags its torque, more integrator overshoots every swing of the plan
     ret.longitudinalTuning.kiV = [0.18, 0.15, 0.1, 0.1] if ret.flags & PSAFlags.EV else [0.3, 0.4, 0.5, 0.8]
 
     return ret
