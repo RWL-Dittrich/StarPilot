@@ -84,6 +84,7 @@ class CarController(CarControllerBase):
     P = CarControllerParams
     can_sends = []
     actuators = CC.actuators
+    CS.personality_bars = CC.hudControl.leadDistanceBars  # for the time gap sync in carstate
 
     # *** lateral ***
     apply_angle = actuators.steeringAngleDeg
