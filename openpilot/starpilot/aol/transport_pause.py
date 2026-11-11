@@ -446,9 +446,14 @@ class TransportPauseFeedback:
     warning = any(event.softDisable for event in events)
     recovering = bool(getattr(self, 'ordinary_warning_retained', False) and not warning)
     stock_user = stock_lateral_user_event(cp)
+    pedal = any(event.name == log.OnroadEvent.EventName.pedalPressed and event.userDisable for event in events)
+    brake_proof = getattr(self, 'ordinary_brake_proof', None)
+    released_brake = bool(self.ordinary_warning_retained and not cs.brakePressed and not cs.regenBraking and
+      brake_proof is not None and brake_proof[0] == event_ns and
+      brake_proof[2:] == (self.session, producer, self.availability_epoch) and now_ns <= brake_proof[1])
     # Family button/pedal latch clear: no rearm.
     if any(event.userDisable and event.name != stock_user and not (
-        event.name == log.OnroadEvent.EventName.pedalPressed and (cs.brakePressed or cs.regenBraking) or
+        event.name == log.OnroadEvent.EventName.pedalPressed and (cs.brakePressed or cs.regenBraking or released_brake) or
         event.name == log.OnroadEvent.EventName.buttonCancel and (physical_cancel(cs, cp) or
           cp.brand == 'gm' and 0 < self.gm_withdrawal_ns == event_ns <= now_ns and
           now_ns - event_ns <= SAFETY_MAX_AGE_NS)) for event in events):
@@ -472,7 +477,8 @@ class TransportPauseFeedback:
     axis_first = bool(str(axis.faultReason) == 'availabilityPause' and
       not (axis.lateralActive or axis.longitudinalActive or axis.desiredLateral or
            axis.desiredLongitudinal or axis.nativeAcknowledged) and
-      prior is not None and prior[5] == 'none' and prior[9] and prior[11] and prior[13] and
+      prior is not None and prior[5] == 'none' and prior[11] and prior[13] and
+      (prior[9] or self.ordinary_warning_retained and not prior[10] and not prior[12]) and
       prior[14:16] == (producer, self.availability_epoch) and
       0 < prior[8] <= now_ns and (pending or now_ns <= prior[4] and now_ns - prior[8] <= AXIS_MAX_AGE_NS) and
       event_ns < axis.faultEventMonoTime <= stamp and now_ns - axis.faultEventMonoTime <= AXIS_MAX_AGE_NS)
@@ -483,16 +489,26 @@ class TransportPauseFeedback:
       prior[9] and prior[11] and prior[13] and prior[14:16] == (producer, self.availability_epoch) and
       0 < prior[8] <= now_ns <= prior[4] and now_ns - prior[8] <= AXIS_MAX_AGE_NS and
       0 < axis.faultEventMonoTime < event_ns and now_ns - event_ns <= AXIS_MAX_AGE_NS)
+    recovery_join = bool(warning and self.ordinary_warning_retained and not pending and prior is not None and
+      prior[5] == 'none' and not any((prior[9], prior[10], prior[12])) and prior[11] and prior[13] and
+      prior[14:16] == (producer, self.availability_epoch) and str(axis.faultReason) == 'none' and
+      str(axis.mode) == 'off' and not axis.lateralActive and not axis.longitudinalActive and
+      axis.desiredLateral and not axis.desiredLongitudinal and axis.nativeAcknowledged and
+      axis.sequence == self.sequence and axis.sourceCarStateMonoTime == prior[8] and
+      stamp == prior[2] == prior[3] and axis.validUntilMonoTime == prior[4] and
+      axis.faultEventMonoTime == prior[6] and 0 < prior[8] <= stamp <= now_ns <= prior[4] and
+      now_ns - prior[8] <= AXIS_MAX_AGE_NS and
+      0 < axis.faultEventMonoTime < event_ns <= now_ns and now_ns - event_ns <= AXIS_MAX_AGE_NS)
     withdrawn = bool(not axis.lateralActive and not axis.longitudinalActive and
       not axis.desiredLongitudinal and
       (warning and str(axis.faultReason) == 'availabilityPause' and axis.faultEventMonoTime == event_ns <= stamp or
        recovering and str(axis.faultReason) == 'none'))
-    if not active_join and not withdrawn and not axis_first and not repeated_join:
+    if not active_join and not recovery_join and not withdrawn and not axis_first and not repeated_join:
       return False
     if pending and not axis_first and not repeated_join and not (withdrawn and warning and event_ns == self.pending_event):
       return False
     native = _configured_transport_native(sm, cp, self.session, now_ns,
-      allow_restricted_lateral=withdrawn or axis_first or repeated_join or bool(cs.steerFaultTemporary),
+      allow_restricted_lateral=withdrawn or recovery_join or axis_first or repeated_join or bool(cs.steerFaultTemporary),
       require_longitudinal=not (withdrawn or axis_first or repeated_join))
     if native is None and active_join and cp.brand == 'ford':
       from openpilot.starpilot.car.ford.gas_override import healthy_gas_transport_native
@@ -511,6 +527,10 @@ class TransportPauseFeedback:
     if pending:
       self.pending_event = 0
       self.ordinary_warning_pending_baseline = None
+    if pedal and (cs.brakePressed or cs.regenBraking):
+      self.ordinary_brake_proof = (event_ns, int(axis.validUntilMonoTime), self.session, producer, self.availability_epoch)
+    elif not pedal:
+      self.ordinary_brake_proof = None
     self.ordinary_warning_retained = True
     return True
 
@@ -815,16 +835,9 @@ class TransportPauseFeedback:
     from opendbc.car.hyundai.canfd_stock_aol import qualified_long as qualified
     from openpilot.starpilot.car.hyundai.aol import qualified_ccnc_long_aol as ev9_qualified
     from opendbc.car.hyundai.blended_stock_aol import qualified_alpha as mixed_qualified
+    from opendbc.car.hyundai.classic_long_aol import independent_buttons_qualified as classic_qualified
     from opendbc.car.structs import car
 
-    if (not latched or self.failed or self.paused or self.pending_event or
-        not self.session or str(axis.sessionId) != self.session or
-        not (qualified(cp, marked_only=True) or ev9_qualified(cp, marked_only=True) or mixed_qualified(cp, marked_only=True)) or
-        not self.lateral_baseline_ns or not 0 <= now_ns - self.lateral_baseline_ns <= AXIS_MAX_AGE_NS or
-        str(axis.faultReason) != 'none' or not axis.nativeAcknowledged or
-        not axis.desiredLateral or not axis.lateralActive or cs.accFaulted or
-        not cs.canValid or cs.canTimeout or cs.steerFaultTemporary or cs.steerFaultPermanent):
-      return None
     cancel = any(e.type == car.CarState.ButtonEvent.Type.cancel and e.pressed for e in cs.buttonEvents)
     fresh_cancel = bool(cancel and self.last_cancel_source_ns < cancel_source_ns <= now_ns and
       now_ns - cancel_source_ns <= AXIS_MAX_AGE_NS)
@@ -833,6 +846,18 @@ class TransportPauseFeedback:
     if not withdrawal_required and (self.longitudinal_cancel_ns or not fresh_cancel):
       return None
     if self.longitudinal_cancel_ns and not 0 <= now_ns - self.longitudinal_cancel_ns <= SAFETY_MAX_AGE_NS:
+      return None
+
+    classic = classic_qualified(cp, marked_only=True)
+    if (not latched or self.failed or self.paused or self.pending_event or
+        not self.session or str(axis.sessionId) != self.session or
+        classic and (not self.availability_producer or axis.intentProducerSessionId != self.availability_producer or
+                     axis.intentIntegrityEpoch != self.availability_epoch) or
+        not (qualified(cp, marked_only=True) or ev9_qualified(cp, marked_only=True) or mixed_qualified(cp, marked_only=True) or classic) or
+        not self.lateral_baseline_ns or not 0 <= now_ns - self.lateral_baseline_ns <= AXIS_MAX_AGE_NS or
+        str(axis.faultReason) != 'none' or not axis.nativeAcknowledged or
+        not axis.desiredLateral or not axis.lateralActive or cs.accFaulted or
+        not cs.canValid or cs.canTimeout or cs.steerFaultTemporary or cs.steerFaultPermanent):
       return None
     event_ns = int(sm.logMonoTime['onroadEvents'])
     if (not sm.seen['onroadEvents'] or not sm.valid['onroadEvents'] or not sm.alive['onroadEvents'] or
@@ -1326,6 +1351,7 @@ class TransportPauseFeedback:
       axis = sm['aolAxisState']
       if not latched or cp_identity(cp) != self.cp or self.session and str(axis.sessionId) != self.session:
         self.ordinary_warning_retained = False
+        self.ordinary_brake_proof = None
         self.ordinary_warning_pending_baseline = None
         self.temporary_eps_event_ns = 0
         self.hkg_eps_join_until_ns = 0
@@ -1392,6 +1418,13 @@ class TransportPauseFeedback:
         native = _healthy_transport_native(sm, cp, cs, str(axis.sessionId), now_ns)
         if cold_calibration_intent_current(self, sm, cp, cs, axis, native, now_ns,
             pending=startup_calibration_pending, producer=intent_producer_session):
+          self.session = str(axis.sessionId)
+          self.sequence, self.signature = int(axis.sequence), signature
+          return False
+      if cp.brand == 'hyundai' and current and continuity:
+        from openpilot.starpilot.car.hyundai.aol import retain_stopped_eps_arm
+        if retain_stopped_eps_arm(self, sm, cp, cs, axis, now_ns, latched=latched,
+            arm_ns=main_arm_ns, producer=intent_producer_session):
           self.session = str(axis.sessionId)
           self.sequence, self.signature = int(axis.sequence), signature
           return False

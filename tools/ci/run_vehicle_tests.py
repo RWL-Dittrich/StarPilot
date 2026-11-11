@@ -41,6 +41,7 @@ FORD_BLUEPILOT_NATIVE_TARGETS = tuple(str(path.relative_to(ROOT)) for path in so
 # Representative production callers plus their source/native refusal cases.
 # The emitted selected_test_ids record exact parametrized configurations.
 AOL_LIFECYCLE_TARGETS = (
+  "openpilot/starpilot/aol/tests/test_ford_long_only_withdrawal.py",
   'opendbc_repo/opendbc/car/tests/test_isotp_query_interference.py',
   'openpilot/starpilot/aol/tests/test_mazda_source_deadline.py',
   "openpilot/starpilot/aol/tests/test_gv60_hda1_alpha_aol.py",
@@ -168,6 +169,7 @@ AOL_LIFECYCLE_TARGETS = (
   "openpilot/starpilot/galaxy/tests/test_prius_sng_settings.py",
   "openpilot/starpilot/car/toyota/tests/test_sng_resume.py",
   "openpilot/starpilot/car/toyota/tests/test_auto_sdsu_resume.py",
+  "openpilot/starpilot/car/toyota/tests/test_gas_steering_withdrawal.py",
   "openpilot/starpilot/car/toyota/tests/test_resume_alert.py",
   "openpilot/starpilot/car/toyota/tests/test_sng.py",
   "openpilot/starpilot/car/toyota/tests/test_sng_callers.py",
@@ -267,6 +269,7 @@ DEBUG_SAFETY_CLASS_TARGETS = {
 
 
 RELEASE_TARGETS = (
+  "openpilot/starpilot/aol/tests/test_ford_long_only_withdrawal.py",
   "opendbc_repo/opendbc/safety/tests/test_hyundai_gv60_hda1_long_aol.py",
   'openpilot/starpilot/car/toyota/tests/test_prius_retrofit_stock.py',
   'openpilot/starpilot/car/toyota/tests/test_prius_retrofit_stock_callers.py',

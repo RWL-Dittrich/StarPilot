@@ -291,7 +291,7 @@ class VisionModelCore:
 
   ASSET_DIR = Path(__file__).resolve().parent / "assets"
   DETECTOR_SHA256 = "82408b68c79c269296f0af942130c5383cace4ee06c78e2a4690e8488720116a"
-  CLASSIFIER_SHA256 = "5d861067ab8f50986488f983cbc24f78527775d37af0b9740c5545d5f3173902"
+  CLASSIFIER_SHA256 = "f70477aa34a5557b69103ed65066b5a7a678f5bc35dfb4ee19914aec3c108918"
   DETECTOR_SIZE = 256
   CLASSIFIER_SIZE = 128
 
@@ -805,7 +805,8 @@ class VisionModelCore:
         cached_bytes += crop.nbytes
       return result
 
-    for proposal_confidence, class_id, (x1, y1, x2, y2) in self._collect_detector_classifier_proposals(frame_bgr):
+    proposals = self._collect_detector_classifier_proposals(frame_bgr)
+    for proposal_index, (proposal_confidence, class_id, (x1, y1, x2, y2)) in enumerate(proposals):
       if class_id == 1:
         continue
       if class_id == 0:
@@ -924,10 +925,43 @@ class VisionModelCore:
         if class_id == 2:
           is_regulatory = True
 
+        if (class_id == 0 and not is_small_box and raw_is_regulatory and
+            tuple(expansions) == DETECTOR_CLASSIFIER_EXPANSIONS and
+            (expand_left, expand_top, expand_right, expand_bottom, expansion_weight) == expansions[-1] and
+            len(speed_scores) == 1):
+          agreed_speed = next(iter(speed_scores))
+          if (agreed_speed not in SCHOOL_ZONE_SPEED_VALUES and
+              speed_support_counts[agreed_speed] == 2 and
+              DETECTOR_CLASSIFIER_STRONG_MODEL_CONSENSUS_ENABLED and
+              speed_strong_model_support.get(agreed_speed, 0) >= DETECTOR_CLASSIFIER_STRONG_MODEL_CONSENSUS_MIN_SUPPORT and
+              speed_direct_model_support.get(agreed_speed, 0) >= 1 and
+              speed_regulatory_support.get(agreed_speed, 0) >= 1 and
+              speed_scores[agreed_speed] + DETECTOR_CLASSIFIER_SUPPORT_BONUS >
+              expansion_weight + DETECTOR_CLASSIFIER_REGULATORY_BONUS and
+              speed_best_confidences[agreed_speed] * .72 + proposal_confidence * .24 +
+              DETECTOR_CLASSIFIER_SUPPORT_BONUS >= .95):
+            break
+
         face_filter = getattr(self, '_speed_face_filter', None)
         if face_filter is not None and face_filter.reject_once((proposal_confidence, class_id, (x1, y1, x2, y2))):
           self.latest_detector_proposal = None
           return None
+        if (type(proposals) is list and proposal_index == len(proposals) - 1 and
+            expansions is DETECTOR_CLASSIFIER_EXPANSIONS and
+            (expand_left, expand_top, expand_right, expand_bottom, expansion_weight) == expansions[-1] and
+            class_id == 0 and best_score == .95 and
+            getattr(self, 'classifier_net', None) is not None):
+          continue
+        if (type(proposals) is list and proposal_index == len(proposals) - 1 and
+            expansions is DETECTOR_CLASSIFIER_EXPANSIONS and
+            (expand_left, expand_top, expand_right, expand_bottom, expansion_weight) == expansions[-1] and
+            getattr(self, 'classifier_net', None) is not None and class_id == 0 and not speed_scores and not raw_is_regulatory and
+            proposal_confidence < DETECTOR_CLASSIFIER_STRONG_MODEL_MIN_PROPOSAL_CONFIDENCE and
+            not (x1 >= frame_width * DETECTOR_CLASSIFIER_TRUSTED_MODEL_MIN_X_RATIO and
+                 box_height <= DETECTOR_CLASSIFIER_TRUSTED_MODEL_MAX_HEIGHT and
+                 proposal_area_ratio <= DETECTOR_CLASSIFIER_TRUSTED_MODEL_MAX_AREA_RATIO and
+                 proposal_confidence >= DETECTOR_CLASSIFIER_TRUSTED_MODEL_MIN_PROPOSAL_CONFIDENCE)):
+          break
         model_read = classify_crop(sign_crop)
         if not any((expand_left, expand_top, expand_right, expand_bottom)):
           primary_reject_dominant = bool(
