@@ -5,6 +5,7 @@ from opendbc.car.common.conversions import Conversions as CV
 from opendbc.car.psa.values import DBC, CarControllerParams, EpsState, PSAFlags
 from opendbc.car.interfaces import CarStateBase
 
+ButtonType = structs.CarState.ButtonEvent.Type
 GearShifter = structs.CarState.GearShifter
 
 # stock radar ECU message, 50 Hz. The ESP faults after ~150 ms without it, so the radar counts as gone well before that
@@ -17,6 +18,10 @@ ACC_TORQUE_LOST_FRAMES = 100
 # SPEED_SETPOINT reads 2 km/h below the set speed shown on the dash
 CLUSTER_SETPOINT_OFFSET = 2  # km/h
 
+# values of SPEED_SETPOINT and INTER_VEHICLE_TIME_SETPOINT with ACC off, 0 before the first frame
+SETPOINT_OFF = {0, 255}  # km/h
+GAP_OFF = 6.0  # s, the idle value is 6.2
+
 
 class CarState(CarStateBase):
   def __init__(self, CP):
@@ -25,6 +30,8 @@ class CarState(CarStateBase):
     self.radar_last_ts = 0
     self.radar_stale_frames = 0
     self.acc_torque_lost_frames = 0
+    self.setpoint_last = 0
+    self.gap_last = 0.
 
   def update(self, can_parsers) -> structs.CarState:
     cp = can_parsers[Bus.main]
@@ -72,6 +79,17 @@ class CarState(CarStateBase):
     ret.accFaulted = cp_adas.vl['HS2_DYN_UCF_MDD_32D']['ACC_ETAT_DECEL_OR_ESP_STATUS'] == 3
     # resume request
     self.hs2_dat_mdd_cmd_452 = copy.copy(cp_adas.vl['HS2_DAT_MDD_CMD_452'])
+
+    # the stalk buttons are not on CAN, the BSI only sends what they change: a short press per change
+    gap = cp_adas.vl['HS2_DAT_MDD_CMD_452']['INTER_VEHICLE_TIME_SETPOINT']
+    button = None
+    if setpoint != self.setpoint_last and not {setpoint, self.setpoint_last} & SETPOINT_OFF:
+      button = ButtonType.accelCruise if setpoint > self.setpoint_last else ButtonType.decelCruise
+    elif gap != self.gap_last and 0 < min(gap, self.gap_last) and max(gap, self.gap_last) < GAP_OFF:
+      button = ButtonType.gapAdjustCruise
+    if button is not None:
+      ret.buttonEvents = [structs.CarState.ButtonEvent(pressed=pressed, type=button) for pressed in (True, False)]
+    self.setpoint_last, self.gap_last = setpoint, gap
 
     # is the stock radar ECU still transmitting? Our own 0x2B6 is a TX echo, which the parser drops
     radar_ts = cp_adas.ts_nanos[RADAR_MSG]['COUNTER']

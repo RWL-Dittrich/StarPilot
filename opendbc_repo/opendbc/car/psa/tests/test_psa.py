@@ -268,9 +268,10 @@ class PsaEmulationTest(unittest.TestCase):
 
   def step(self, long_active: bool, accel: float, brake_pressed: bool = False, gas_pressed: bool = False, cruise_enabled: bool = True,
            standstill: bool = False, v_ego: float = 0.0, pitch: float = 0.0, lead_visible: bool = False, a_ego: float = 0.0,
-           long_state=LongCtrlState.off):
+           long_state=LongCtrlState.off, cancel: bool = False):
     CC = structs.CarControl()
     CC.longActive = long_active
+    CC.cruiseControl.cancel = cancel
     CC.actuators.accel = accel
     CC.actuators.longControlState = long_state
     CC.orientationNED = [0.0, pitch, 0.0]
@@ -611,6 +612,107 @@ class TestPsaLateralEngage(unittest.TestCase):
     self.assertFalse(self.lka_active(60.0), "took over a wheel steered beyond what the limiter can hold")
     self.assertTrue(self.lka_active(5.0))
     self.assertTrue(self.lka_active(60.0), "dropped out of a curve it was already steering")
+
+
+class TestPsaCancelAcc(unittest.TestCase):
+  """With stock ACC, a cancel request follows each BSI cruise frame with the frame the BSI sends once ACC is off."""
+
+  ACTIVE = {'COUNTER': 0, 'LONGITUDINAL_REGULATION_TYPE': 3, 'SPEED_SETPOINT': 68, 'CHECKSUM_CONS_RVV_LVV2': 3,
+            'RVV_ACC_ACTIVATION_REQ': 1, 'INTER_VEHICLE_TIME_SETPOINT': 2.0}
+
+  def cancel_frames(self, alpha_long: bool, cancel: bool, counters):
+    CI = make_car_interface(alpha_long=alpha_long)
+    parser = CANParser('psa_aee2010_r3', [('HS2_DAT_MDD_CMD_452', 0)], PSA_ADAS_BUS)
+    CC = structs.CarControl()
+    CC.cruiseControl.cancel = cancel
+    sent, now_nanos = [], 0
+    for counter in counters:
+      CI.update([])
+      CI.CS.hs2_dat_mdd_cmd_452 = self.ACTIVE | {'COUNTER': counter}
+      _, can_sends = CI.apply(CC.as_reader(), now_nanos)
+      now_nanos += int(DT_CTRL * 1e9)
+      for msg in (m for m in can_sends if m[0] == 0x452):
+        self.assertEqual(msg[2], PSA_ADAS_BUS)
+        parser.update([[now_nanos, [msg]]])
+        sent.append(dict(parser.vl['HS2_DAT_MDD_CMD_452']))
+    return sent
+
+  def test_one_cancel_frame_per_bsi_frame(self):
+    # the BSI sends at 20 Hz, so its counter holds for five control frames
+    sent = self.cancel_frames(alpha_long=False, cancel=True, counters=[3] * 5 + [4] * 5 + [15] * 5)
+    self.assertEqual([int(m['COUNTER']) for m in sent], [4, 5, 0], "one frame after each BSI frame, on the next counter")
+    for m in sent:
+      self.assertEqual(m['RVV_ACC_ACTIVATION_REQ'], 0)
+      self.assertEqual(m['SPEED_SETPOINT'], 255)
+      self.assertEqual(m['CHECKSUM_CONS_RVV_LVV2'], 0)
+      self.assertAlmostEqual(m['INTER_VEHICLE_TIME_SETPOINT'], 6.2)
+      self.assertEqual(m['LONGITUDINAL_REGULATION_TYPE'], 3, "the rest of the BSI frame is passed through")
+
+  def test_nothing_without_a_cancel_request(self):
+    self.assertEqual(self.cancel_frames(alpha_long=False, cancel=False, counters=range(16)), [])
+
+  def test_not_with_openpilot_longitudinal(self):
+    # there the radar is ours, a frame for the stock radar has nowhere to go
+    self.assertEqual(self.cancel_frames(alpha_long=True, cancel=True, counters=range(16)), [])
+
+
+class TestPsaCancelAccEmulation(PsaEmulationTest):
+  """With openpilot longitudinal the cancel goes through the radar status we emulate."""
+
+  def test_inhibited_while_the_bsi_still_requests_acc(self):
+    # openpilot is not engaged and the car's cruise is still on: inhibited, as the stock radar reports
+    # when it stops serving a request, never off
+    self.knock_out()
+    msg = self.emulated(long_active=False, accel=0.0, cruise_enabled=True, cancel=True, v_ego=15.0)
+    self.assertEqual(msg['ACC_STATUS'], 2)
+    self.assertEqual(msg['GMP_WHEEL_TORQUE'], -4000)
+    self.assertEqual(msg['WHEEL_TORQUE_REQUEST'], 0)
+    self.assertEqual(msg['MDD_DECEL_CONTROL_REQ'], 0)
+
+  def test_off_once_the_bsi_has_withdrawn_its_request(self):
+    self.knock_out()
+    msg = self.emulated(long_active=False, accel=0.0, cruise_enabled=False, cancel=False, v_ego=15.0)
+    self.assertEqual(msg['ACC_STATUS'], 3)
+
+  def test_gas_override_stays_suspended(self):
+    # a gas press with openpilot disengaged keeps the suspended status until the pedal is released
+    self.knock_out()
+    msg = self.emulated(long_active=False, accel=0.0, cruise_enabled=True, cancel=True, gas_pressed=True, v_ego=15.0)
+    self.assertEqual(msg['ACC_STATUS'], 5)
+    msg = self.emulated(long_active=False, accel=0.0, cruise_enabled=True, cancel=True, gas_pressed=False, v_ego=15.0)
+    self.assertEqual(msg['ACC_STATUS'], 2)
+
+  def test_engaged_driving_is_unchanged(self):
+    self.knock_out()
+    msg = self.emulated(long_active=True, accel=0.5, cruise_enabled=True, cancel=False, v_ego=15.0)
+    self.assertEqual(msg['ACC_STATUS'], 4)
+
+
+class TestPsaButtonEvents(unittest.TestCase):
+  """The stalk buttons are not on CAN, they are read off the set speed and time gap the BSI sends."""
+
+  def setUp(self):
+    self.CI = make_car_interface(alpha_long=True)
+    self.packer = CANPacker('psa_aee2010_r3')
+    self.now_nanos = 0
+
+  def buttons(self, kph: int, gap: float):
+    """Hold a set speed and time gap on the ADAS bus for a few frames, return (type, pressed) of every event."""
+    events = []
+    for _ in range(5):
+      self.now_nanos += int(DT_CTRL * 1e9)
+      msg = self.packer.make_can_msg('HS2_DAT_MDD_CMD_452', PSA_ADAS_BUS, {'SPEED_SETPOINT': kph, 'INTER_VEHICLE_TIME_SETPOINT': gap})
+      events += [(str(b.type), b.pressed) for b in self.CI.update([(self.now_nanos, [msg])]).buttonEvents]
+    return events
+
+  def test_set_speed_and_gap_changes_are_short_presses(self):
+    self.assertEqual(self.buttons(255, 6.2), [], "ACC off")
+    self.assertEqual(self.buttons(68, 2.0), [], "switching ACC on is not a button openpilot knows")
+    self.assertEqual(self.buttons(69, 2.0), [('accelCruise', True), ('accelCruise', False)])
+    self.assertEqual(self.buttons(64, 2.0), [('decelCruise', True), ('decelCruise', False)])
+    self.assertEqual(self.buttons(64, 1.0), [('gapAdjustCruise', True), ('gapAdjustCruise', False)])
+    self.assertEqual(self.buttons(64, 1.0), [], "nothing changed")
+    self.assertEqual(self.buttons(255, 6.2), [], "switching ACC off")
 
 
 class TestPsaClusterSetSpeed(unittest.TestCase):

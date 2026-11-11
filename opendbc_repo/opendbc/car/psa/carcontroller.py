@@ -5,8 +5,8 @@ from opendbc.car import Bus, DT_CTRL, make_tester_present_msg
 from opendbc.car.common.filter_simple import FirstOrderFilter
 from opendbc.car.interfaces import CarControllerBase
 from opendbc.car.lateral import apply_steer_angle_limits_vm, get_max_angle_vm
-from opendbc.car.psa.psacan import (create_lka_steering, create_resume_acc, create_disable_radar, create_enable_radar,
-                                    create_HS2_DYN1_MDD_ETAT_2B6, create_HS2_DYN_MDD_ETAT_2F6)
+from opendbc.car.psa.psacan import (create_lka_steering, create_resume_acc, create_cancel_acc, create_disable_radar,
+                                    create_enable_radar, create_HS2_DYN1_MDD_ETAT_2B6, create_HS2_DYN_MDD_ETAT_2F6)
 from opendbc.car.psa.values import CarControllerParams, PSAFlags
 from opendbc.car.vehicle_model import VehicleModel
 
@@ -68,6 +68,7 @@ class CarController(CarControllerBase):
     self.pitch = FirstOrderFilter(0., 1.0, DT_CTRL)
     self.torque_last = None
     self.long_frames = 0
+    self.cancel_counter_last = None
 
   def release_radar(self) -> bool:
     """Hand the ADAS bus back to the radar ECU. Non-blocking, returns True once it is back.
@@ -228,9 +229,17 @@ class CarController(CarControllerBase):
       if self.radar_disabled and not self.radar_released and self.frame % 2 == 0:
         can_sends.append(create_HS2_DYN1_MDD_ETAT_2B6(self.packer, self.frame // 2, accel, decel_active, long_enabled,
                                                       CS.out.gasPressed, CS.out.brakePressed, CS.out.standstill, torque,
-                                                      standstill_hold, self.launching))
+                                                      standstill_hold, self.launching,
+                                                      CC.cruiseControl.cancel and not long_enabled))
         can_sends.append(create_HS2_DYN_MDD_ETAT_2F6(self.packer, decel_active or standstill_hold or self.launching,
                                                      CC.hudControl.leadVisible, self.bars, drive_away))
+
+    # stock long: cancel ACC by following each BSI cruise frame with the one it sends once ACC is off
+    elif CC.cruiseControl.cancel:
+      counter = CS.hs2_dat_mdd_cmd_452['COUNTER']
+      if counter != self.cancel_counter_last:
+        self.cancel_counter_last = counter
+        can_sends.append(create_cancel_acc(self.packer, (counter + 1) % 16, CS.hs2_dat_mdd_cmd_452))
 
     # stock long: resume button every 3 seconds to prevent the autohold timeout
     elif CC.latActive and CS.out.standstill and CC.hudControl.leadVisible:

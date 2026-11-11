@@ -29,22 +29,37 @@ def create_resume_acc(packer, counter, status, hs2_dat_mdd_cmd_452):
   return packer.make_can_msg('HS2_DAT_MDD_CMD_452', 1, hs2_dat_mdd_cmd_452)
 
 
+def create_cancel_acc(packer, counter, hs2_dat_mdd_cmd_452):
+  # the BSI's own frame with ACC off: no activation request and the idle setpoint and time gap
+  values = hs2_dat_mdd_cmd_452 | {
+    'COUNTER': counter,
+    'RVV_ACC_ACTIVATION_REQ': 0,
+    'SPEED_SETPOINT': 255,
+    'CHECKSUM_CONS_RVV_LVV2': 0,
+    'INTER_VEHICLE_TIME_SETPOINT': 6.2,
+  }
+  return packer.make_can_msg('HS2_DAT_MDD_CMD_452', 1, values)
+
+
 # Radar, 50 Hz
 def create_HS2_DYN1_MDD_ETAT_2B6(packer, frame: int, accel: float, decel_active: bool, enabled: bool,
                                  gasPressed: bool, brakePressed: bool, standstill: bool, torque: int,
-                                 standstill_hold: bool = False, launching: bool = False):
+                                 standstill_hold: bool = False, launching: bool = False, cancel: bool = False):
   # Stock standstill sequence:
   #   hold:   decel request with the -10.65 hold code, potential torque only
   #   launch: desired decel steps to +2.0 with the decel request still up, this is what the ESP releases on
   # ACC_STATUS stays active (4) for as long as a decel request is up, the release has to be atomic
+  # cancel: the BSI still requests ACC but we are not driving. The stock radar never reports off (3) against
+  # an active request for more than 0.06 s, it reports inhibited (2) and the BSI withdraws the request
   torque_mode = enabled and not decel_active and not standstill_hold
   decel_req = decel_active or standstill_hold or launching
+  off_status = 2 if brakePressed or cancel else 3
   values = {
     'MDD_DESIRED_DECELERATION': -10.65 if standstill_hold else 2.0 if launching else accel if decel_active else 2.05,  # m/s², 2.05 is idle
     'POTENTIAL_WHEEL_TORQUE_REQUEST': 2 if decel_active and not standstill_hold else (1 if enabled else 0),
     'MIN_TIME_FOR_DESIRED_GEAR': 6.2 if torque_mode or standstill_hold else 0.0,
     'GMP_POTENTIAL_WHEEL_TORQUE': torque if torque_mode or standstill_hold else -4000,
-    'ACC_STATUS': 4 if decel_req else ((5 if gasPressed else 2 if brakePressed and not standstill else 4) if enabled else (2 if brakePressed else 3)),
+    'ACC_STATUS': 4 if decel_req else ((5 if gasPressed else 2 if brakePressed and not standstill else 4) if enabled else off_status),
     'GMP_WHEEL_TORQUE': torque if torque_mode else -4000,
     'WHEEL_TORQUE_REQUEST': 1 if torque_mode else 0,
     'AUTO_BRAKING_STATUS': 3,  # AEB
