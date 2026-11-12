@@ -21,10 +21,9 @@ CLUSTER_SETPOINT_OFFSET = 2  # km/h
 # values of SPEED_SETPOINT and INTER_VEHICLE_TIME_SETPOINT with ACC off, 0 before the first frame
 SETPOINT_OFF = {0, 255}  # km/h
 GAP_OFF = 6.0  # s, the idle value is 6.2
-# time gap to openpilot personality: 2.0 s and 1.0 s are the two settings seen so far, between them is standard
+# time gap to openpilot personality: the stalk steps through 2.0, 1.5 and 1.0 s
 GAP_RELAXED = 1.75  # s and above
 GAP_AGGRESSIVE = 1.25  # s and below
-GAP_SYNC_FRAMES = 50  # 0.5 s between presses, for the new personality to come back around
 
 
 class CarState(CarStateBase):
@@ -36,8 +35,7 @@ class CarState(CarStateBase):
     self.acc_torque_lost_frames = 0
     self.setpoint_last = 0
     self.gap_last = 0.
-    self.gap_sync_frames = 0
-    self.personality_bars = 0  # hudControl.leadDistanceBars, openpilot's personality + 1
+    self.gap_personality = None  # LongitudinalPersonality the time gap asks for, None with ACC off or stock ACC
 
   def update(self, can_parsers) -> structs.CarState:
     cp = can_parsers[Bus.main]
@@ -89,17 +87,14 @@ class CarState(CarStateBase):
     # the stalk buttons are not on CAN, the BSI only sends what they change: a short press per change
     gap = cp_adas.vl['HS2_DAT_MDD_CMD_452']['INTER_VEHICLE_TIME_SETPOINT']
     button = None
-    self.gap_sync_frames = max(self.gap_sync_frames - 1, 0)
+    # with openpilot longitudinal the car's time gap is the master: card writes this to LongitudinalPersonality.
+    # Not a distance press, StarPilot drops those for PSA before they reach the personality
+    self.gap_personality = None
+    if self.CP.openpilotLongitudinalControl and 0 < gap < GAP_OFF:
+      self.gap_personality = 2 if gap >= GAP_RELAXED else 0 if gap <= GAP_AGGRESSIVE else 1
     if setpoint != self.setpoint_last and not {setpoint, self.setpoint_last} & SETPOINT_OFF:
       button = ButtonType.accelCruise if setpoint > self.setpoint_last else ButtonType.decelCruise
-    elif self.CP.openpilotLongitudinalControl:
-      # the car's time gap is the master: a distance press steps openpilot's personality down by one,
-      # so press until it is the one that matches the gap. personality_bars comes from the carcontroller
-      bars = 3 if gap >= GAP_RELAXED else 1 if gap <= GAP_AGGRESSIVE else 2
-      if 0 < gap < GAP_OFF and self.personality_bars in (1, 2, 3) and self.personality_bars != bars and self.gap_sync_frames == 0:
-        button = ButtonType.gapAdjustCruise
-        self.gap_sync_frames = GAP_SYNC_FRAMES
-    elif gap != self.gap_last and 0 < min(gap, self.gap_last) and max(gap, self.gap_last) < GAP_OFF:
+    elif not self.CP.openpilotLongitudinalControl and gap != self.gap_last and 0 < min(gap, self.gap_last) and max(gap, self.gap_last) < GAP_OFF:
       button = ButtonType.gapAdjustCruise
     if button is not None:
       ret.buttonEvents = [structs.CarState.ButtonEvent(pressed=pressed, type=button) for pressed in (True, False)]

@@ -698,17 +698,13 @@ class TestPsaButtonEvents(unittest.TestCase):
     self.packer = CANPacker('psa_aee2010_r3')
     self.now_nanos = 0
 
-  def buttons(self, kph: int, gap: float, frames: int = 5):
+  def buttons(self, kph: int, gap: float):
     """Hold a set speed and time gap on the ADAS bus for a few frames, return (type, pressed) of every event."""
     events = []
-    for _ in range(frames):
+    for _ in range(5):
       self.now_nanos += int(DT_CTRL * 1e9)
       msg = self.packer.make_can_msg('HS2_DAT_MDD_CMD_452', PSA_ADAS_BUS, {'SPEED_SETPOINT': kph, 'INTER_VEHICLE_TIME_SETPOINT': gap})
-      new = [(str(b.type), b.pressed) for b in self.CI.update([(self.now_nanos, [msg])]).buttonEvents]
-      if ('gapAdjustCruise', False) in new and self.ALPHA_LONG:
-        # what selfdrived does with a distance button release, and controlsd reports back as bars
-        self.CI.CS.personality_bars = (self.CI.CS.personality_bars - 2) % 3 + 1
-      events += new
+      events += [(str(b.type), b.pressed) for b in self.CI.update([(self.now_nanos, [msg])]).buttonEvents]
     return events
 
   def test_set_speed_and_gap_changes_are_short_presses(self):
@@ -719,39 +715,26 @@ class TestPsaButtonEvents(unittest.TestCase):
     self.assertEqual(self.buttons(64, 1.0), [('gapAdjustCruise', True), ('gapAdjustCruise', False)])
     self.assertEqual(self.buttons(64, 1.0), [], "nothing changed")
     self.assertEqual(self.buttons(255, 6.2), [], "switching ACC off")
+    self.assertIsNone(self.CI.CS.gap_personality, "stock ACC leaves openpilot's personality alone")
 
 
 class TestPsaTimeGapSync(TestPsaButtonEvents):
-  """With openpilot longitudinal the car's time gap sets openpilot's personality, whatever it was before."""
+  """With openpilot longitudinal the car's time gap is handed to card as the personality to set, not as a button."""
 
   ALPHA_LONG = True
-  PRESS = [('gapAdjustCruise', True), ('gapAdjustCruise', False)]
-
-  def synced(self, gap: float, bars_before: int):
-    self.CI.CS.personality_bars = bars_before
-    events = self.buttons(68, gap, frames=200)
-    self.assertEqual(self.buttons(68, gap, frames=200), [], "kept pressing after the personality matched")
-    return events, self.CI.CS.personality_bars
 
   def test_time_gap_sets_the_personality(self):
-    self.buttons(68, 2.0)  # ACC on
-    for gap, bars in ((2.0, 3), (1.5, 2), (1.0, 1)):  # relaxed, standard, aggressive
-      for bars_before in (1, 2, 3):
-        events, bars_after = self.synced(gap, bars_before)
-        self.assertEqual(bars_after, bars, f"{gap} s from {bars_before} bars")
-        self.assertEqual(events, self.PRESS * ((bars_before - bars) % 3), "a press steps the personality down by one")
+    for gap, personality in ((2.0, 2), (1.5, 1), (1.0, 0)):  # relaxed, standard, aggressive
+      self.assertEqual(self.buttons(68, gap), [], "a distance press never reaches the personality on StarPilot")
+      self.assertEqual(self.CI.CS.gap_personality, personality, f"{gap} s")
 
-  def test_no_press_before_openpilot_reports_its_personality(self):
-    self.CI.CS.personality_bars = 0
-    self.assertEqual(self.buttons(68, 1.0, frames=200), [])
-
-  def test_no_press_with_acc_off(self):
-    self.CI.CS.personality_bars = 2
-    self.assertEqual(self.buttons(255, 6.2, frames=200), [])
+  def test_no_personality_with_acc_off(self):
+    self.buttons(68, 1.0)
+    self.buttons(255, 6.2)
+    self.assertIsNone(self.CI.CS.gap_personality)
 
   def test_set_speed_and_gap_changes_are_short_presses(self):
-    # the set speed buttons are unchanged, the gap is synced instead of one press per change
-    self.CI.CS.personality_bars = 3
+    # the set speed buttons are unchanged
     self.buttons(68, 2.0)
     self.assertEqual(self.buttons(69, 2.0), [('accelCruise', True), ('accelCruise', False)])
     self.assertEqual(self.buttons(64, 2.0), [('decelCruise', True), ('decelCruise', False)])

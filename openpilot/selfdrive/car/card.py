@@ -518,6 +518,11 @@ class Car:
     # Update carState from CAN
     observe_controller_can(self.CI, can_list)
     CS = self.CI.update(can_list)
+    if self.CP.brand == 'psa':
+      from openpilot.starpilot.car.psa.gap_personality import GapPersonality
+      if getattr(self, 'psa_gap_personality', None) is None:
+        self.psa_gap_personality = GapPersonality()
+      self.psa_gap_personality.update(self.CP, self.CI.CS, self.params)
     if timing is not None:
       timing.mark('can_parse')
     from openpilot.starpilot.car.gm.aol import f1_conventional_lateral_owner
