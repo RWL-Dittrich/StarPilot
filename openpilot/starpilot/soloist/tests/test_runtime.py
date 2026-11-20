@@ -396,12 +396,12 @@ def test_status_publishes_the_spotify_track_for_the_car_screen(layout):
 
 def test_status_publishes_the_phone_track_only_while_phone_audio_runs(layout):
   sup, _ = make_supervisor(layout, [])
-  sup.phone_prefs = object()
+  sup.phone_prefs = preferences.Preferences(source='phone', phone_name='Pixel 9')
   sup.phone_track = {'Status': 'playing', 'Track': {'Title': 'Phone Song', 'Artist': 'Band'}}
   assert sup.status()['nowPlaying'] is None
   sup.player = object()
   found = sup.status()['nowPlaying']
-  assert found['source'] == 'phone' and found['title'] == 'Phone Song'
+  assert found['source'] == 'phone' and found['title'] == 'Phone Song' and found['device'] == 'Pixel 9'
 
 
 def test_supervisor_waits_for_network_before_starting(layout, monkeypatch):
@@ -470,3 +470,55 @@ def test_network_ready_accepts_either_address_family(monkeypatch, ipv4, ipv6, ex
   from io import StringIO
   monkeypatch.setattr('builtins.open', lambda path: StringIO(ipv4 if path.endswith('/route') else ipv6))
   assert supervisor.network_ready() is expected
+
+
+def test_pull_onroad_takes_spotify_over_only_while_driving(layout, monkeypatch):
+  ready_layout(layout, monkeypatch)
+  state = {'parked': True}
+  monkeypatch.setattr(supervisor, 'parked', lambda: state['parked'])
+  sup, now = make_supervisor(layout, [])
+  sup.tick()
+  now[0] += 1
+  sup.tick()
+  assert sup.client.sent == []
+  from dataclasses import replace
+  preferences.save(replace(preferences.load(layout), pull_onroad=True), layout)
+  now[0] += 1
+  sup.tick()
+  assert sup.client.sent == []
+  state['parked'] = False
+  now[0] += 1
+  sup.tick()
+  now[0] += 1
+  sup.tick()
+  assert sup.client.sent == [('activate', {})]
+  now[0] += supervisor.PULL_RETRY_SECONDS
+  sup.tick()
+  assert sup.client.sent == [('activate', {})] * 2
+
+
+def test_network_change_restarts_an_idle_player_only_if_it_stays_offline(layout, monkeypatch):
+  ready_layout(layout, monkeypatch)
+  spawned = []
+  sup, now = make_supervisor(layout, spawned)
+  changed, online = [1.0], [True]
+  sup.network_change, sup.cloud = lambda: changed[0], lambda pid: online[0]
+  sup.tick()
+  sup.tick()
+  changed[0] = 2.0
+  sup.tick()
+  now[0] += supervisor.NETWORK_RECHECK_SECONDS + 1
+  sup.tick()
+  assert len(spawned) == 2 and any('changed networks' in line for line in sup.log)
+  changed[0], online[0] = 3.0, False
+  sup.tick()
+  sup.last_playing = True
+  now[0] += supervisor.NETWORK_RECHECK_SECONDS + 1
+  sup._follow_network(now[0])
+  assert sup.player is not None  # music from the cache is never cut
+  changed[0] = 4.0
+  sup.tick()
+  now[0] += supervisor.NETWORK_RECHECK_SECONDS + 1
+  sup.last_playing = False
+  sup._follow_network(now[0])
+  assert sup.player is None and sup.status()['state'] == 'retrying'

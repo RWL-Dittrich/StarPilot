@@ -30,6 +30,7 @@ from openpilot.common.linux import LinuxSystemStats
 from openpilot.system.loggerd.config import get_available_percent
 from openpilot.common.swaglog import cloudlog
 from openpilot.system.hardware.power_monitoring import PowerMonitoring
+from openpilot.system.hardware.power_telemetry import PowerTelemetry
 from openpilot.system.hardware.hardware_timing import HardwareLoopTiming
 from openpilot.system.hardware.fan_controller import FanController
 from openpilot.system.hardware.chestnut.monitoring import chestnut_state_thread
@@ -143,6 +144,12 @@ def update_jetlink_alert() -> None:
     jetlink_alert_usable = False
     cloudlog.warning("Offroad_JetlinkUnavailable is not in this params library: Jetlink's offroad alert is off")
 
+def read_aggressive_cooling(params) -> bool:
+  try:
+    return params.get_bool("AggressiveCoolingEnabled")
+  except (UnknownKeyName, OSError, ValueError):
+    return False
+
 def touch_thread(end_event):
   count = 0
 
@@ -223,7 +230,7 @@ def hw_state_thread(end_event, hw_queue):
     time.sleep(DT_HW)
 
 
-def hardware_thread(end_event, hw_queue) -> None:
+def hardware_thread(end_event, hw_queue, power_telemetry: PowerTelemetry) -> None:
   system_stats = LinuxSystemStats() if sys.platform == "linux" else None
   timing = HardwareLoopTiming()
   pm = messaging.PubMaster(['deviceState'])
@@ -280,6 +287,8 @@ def hardware_thread(end_event, hw_queue) -> None:
   thermal_config = HARDWARE.get_thermal_config()
 
   fan_controller = FanController(int(1./DT_HW))
+  aggressive_cooling = read_aggressive_cooling(params)
+  cooling_ignition_prev = False
   chestnut = Chestnut()
   chestnut_status = ChestnutStatus()
   branch = get_short_branch()
@@ -383,7 +392,10 @@ def hardware_thread(end_event, hw_queue) -> None:
     msg.deviceState.maxTempC = all_comp_temp
 
     timing.mark("fan_control")
-    msg.deviceState.fanSpeedPercentDesired = fan_controller.update(all_comp_temp, onroad_conditions["ignition"])
+    if onroad_conditions["ignition"] and not cooling_ignition_prev:
+      aggressive_cooling = read_aggressive_cooling(params)
+    cooling_ignition_prev = onroad_conditions["ignition"]
+    msg.deviceState.fanSpeedPercentDesired = fan_controller.update(all_comp_temp, onroad_conditions["ignition"], aggressive_cooling)
 
     is_offroad_for_5_min = (started_ts is None) and ((not started_seen) or (off_ts is None) or (time.monotonic() - off_ts > 60 * 5))
     if is_offroad_for_5_min and offroad_comp_temp > OFFROAD_DANGER_TEMP:
@@ -501,7 +513,7 @@ def hardware_thread(end_event, hw_queue) -> None:
     msg.deviceState.powerDrawW = current_power_draw
 
     timing.mark("som_power")
-    som_power_draw = HARDWARE.get_som_power_draw()
+    som_power_draw = power_telemetry.value()
     msg.deviceState.somPowerDrawW = som_power_draw
 
     # Check if we need to shut down
@@ -552,8 +564,8 @@ def hardware_thread(end_event, hw_queue) -> None:
     last_uptime_ts = now_ts
 
     if (count % int(60. / DT_HW)) == 0:
-      params.put("UptimeOffroad", uptime_offroad, block=True)
-      params.put("UptimeOnroad", uptime_onroad, block=True)
+      params.put("UptimeOffroad", uptime_offroad)
+      params.put("UptimeOnroad", uptime_onroad)
 
     count += 1
     should_start_prev = should_start
@@ -563,9 +575,15 @@ def main():
   hw_queue = queue.Queue(maxsize=1)
   end_event = threading.Event()
 
+  power_telemetry = PowerTelemetry(HARDWARE.get_som_power_draw, DT_HW)
+  # A kernel sysfs read may not be cancellable. The sole telemetry worker is
+  # daemonized so it cannot delay process shutdown; no health work runs in it.
+  power_thread = threading.Thread(target=power_telemetry.run, args=(end_event,), daemon=True, name="som_power")
+  power_thread.start()
+
   threads = [
     threading.Thread(target=hw_state_thread, args=(end_event, hw_queue)),
-    threading.Thread(target=hardware_thread, args=(end_event, hw_queue)),
+    threading.Thread(target=hardware_thread, args=(end_event, hw_queue, power_telemetry)),
   ]
 
   if COMMA_HARDWARE:

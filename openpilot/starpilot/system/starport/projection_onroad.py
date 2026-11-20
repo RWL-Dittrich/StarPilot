@@ -77,7 +77,7 @@ def native_dependencies():
   from openpilot.starpilot.ui.onroad import OnroadView
   from openpilot.starpilot.ui.onroad_customization import CAMERA_WIDGETS, placement, widget_size
   from openpilot.starpilot.ui.onroad_dm import DriverMonitorLayer
-  from openpilot.starpilot.ui.onroad_map import MapFeed, MapOverlay
+  from openpilot.starpilot.ui.onroad_map import MapFeed, live_overlay
   from openpilot.starpilot.ui.onroad_state import AlertSize, OnroadAlert
   from openpilot.starpilot.ui.pip_preferences import read_pip
   from openpilot.starpilot.ui.pip_render import PiPRenderer
@@ -91,7 +91,9 @@ def native_dependencies():
   from openpilot.starpilot.ui.shell import ShellMode
   from openpilot.starpilot.system.starport.projection_favorites import ProjectionFavorites
   from openpilot.starpilot.system.starport.projection_now_playing import ProjectionNowPlayingFeed
+  from openpilot.starpilot.system.starport.media_audio import music_control
   from openpilot.starpilot.models.jetlink_status import JetlinkStatusFeed
+  from openpilot.starpilot.ui.onroad_jetlink import gpu_inputs
 
   class ProjectionRoadCamera(AugmentedRoadView):
     """Current native calibrated camera/model without stock action widgets."""
@@ -148,9 +150,9 @@ def native_dependencies():
                          pip_warning=PiPWarningSource, read_vasm=read_vasm_preferences, clock_pair_ns=clock_pair_ns,
                          car_schema=car_schema,
                          pip_rect=Rect, pip_widgets=CAMERA_WIDGETS, placement=placement, widget_size=widget_size,
-                         alert=OnroadAlert, alert_size=AlertSize, map_overlay=MapOverlay, map_feed=MapFeed,
+                         alert=OnroadAlert, alert_size=AlertSize, map_overlay=live_overlay, map_feed=MapFeed,
                          favorites=ProjectionFavorites, standby_logo=standby_logo, now_playing_feed=ProjectionNowPlayingFeed,
-                         jetlink_feed=JetlinkStatusFeed)
+                         now_playing_control=music_control, jetlink_feed=JetlinkStatusFeed, gpu_inputs=gpu_inputs)
 
 
 class ProjectionOnroad:
@@ -199,6 +201,10 @@ class ProjectionOnroad:
       if getattr(native, 'now_playing_feed', None) is not None:
         self.now_playing_feed = native.now_playing_feed()
         self._resources.callback(self.now_playing_feed.close)
+      self.now_playing_touch = None
+      if self.now_playing_feed is not None and getattr(native, 'now_playing_control', None) is not None:
+        from openpilot.starpilot.ui.onroad_now_playing import NowPlayingTouch
+        self.now_playing_touch = NowPlayingTouch(native.now_playing_control, getattr(self.onroad, 'now_playing', None))
       self.jetlink_feed = None
       if getattr(native, 'jetlink_feed', None) is not None:
         self.jetlink_feed = native.jetlink_feed()
@@ -240,6 +246,7 @@ class ProjectionOnroad:
         self.favorites = native.favorites(lambda: native.ui_state.started)
         self.favorites.bookmark = lambda: self.bookmark()
         self.favorites.card_bounds = getattr(getattr(self.onroad, 'navigation', None), 'bounds', None)
+        self.favorites.map_rect = lambda: self._map_placement() if self.map is not None else None
         self._resources.callback(self.favorites.close)
     except BaseException:
       self._resources.close()
@@ -355,10 +362,13 @@ class ProjectionOnroad:
       placed = (self.customization or {}).get('widgets', {}).get('now_playing', {})
       self.now_playing_feed.set_enabled(bool(placed.get('enabled')))
       self.onroad.now_playing.track = self.now_playing_feed.snapshot()
+      self.onroad.now_playing.artwork = self.now_playing_feed.artwork()
     if self.jetlink_feed is not None:
       placed = (self.customization or {}).get('widgets', {}).get('jetlink_status', {})
       self.jetlink_feed.set_enabled(bool(placed.get('enabled') and self.native.ui_state.started))
       self.onroad.jetlink_status.status = self.jetlink_feed.snapshot()
+      if (gpu_inputs := getattr(self.native, 'gpu_inputs', None)) is not None:
+        self.onroad.jetlink_status.gpu, self.onroad.jetlink_status.chestnut = gpu_inputs(self.native.ui_state)
     if self.favorites is not None:
       self.favorites.refresh()
       self.onroad.navigation_favorites.document = self.favorites.document
@@ -381,6 +391,9 @@ class ProjectionOnroad:
     if placed is not None and self.map is not None:
       self.map.draw(self.native.rl.Rectangle(placed['x'], placed['y'], placed['width'], placed['height']),
                     placed['opacity'] / 100.0)
+      if state is not None and self.favorites is not None:
+        self.onroad.navigation_favorites.render_map_end(placed['x'], placed['y'], placed['width'], placed['height'],
+                                                        state.customization['layouts']['large'])
 
   def _pip_layer(self, rect, state, *, submit=None):
     """Shared camera crops, with Android Auto's own blind-spot trigger and placements."""
@@ -421,7 +434,8 @@ class ProjectionOnroad:
     for side, key in zip(('left', 'right'), native.pip_widgets, strict=True):
       position = native.placement(state.customization, 'large', key)
       if position['enabled']:
-        width, height = native.widget_size(state.customization, 'large', key)
+        width, height = ((position['width'], position['height']) if 'width' in position else
+                         native.widget_size(state.customization, 'large', key))
         placements[side] = native.pip_rect(position['x'], position['y'], width, height)
     result = self.pip.render(rect, saved.mask, signals, enabled=True, on_blinker=on_blinker,
                              on_bsm=on_bsm, invert=saved.invert, placements=placements,
@@ -582,12 +596,31 @@ class ProjectionOnroad:
         if self.favorites is not None:
           self.favorites.cancel()
         continue
+      if self._now_playing_touch(event.kind, x, y):
+        if self.favorites is not None:
+          self.favorites.cancel()
+        continue
       if self.favorites is None:
         continue
       if self._state is None or not self.native.ui_state.started:
         self.favorites.cancel()
         continue
       self.favorites.touch(event.kind, x, y, self._state, self.native.ui_state.started_frame)
+
+  def _now_playing_touch(self, kind, x, y) -> bool:
+    touch = self.now_playing_touch
+    if touch is None:
+      return False
+    state = self._state if self.native.ui_state.started else None
+    placed = state.customization['layouts']['large'].get('now_playing') if state is not None else None
+    track = self.onroad.now_playing.showing()
+    if state is not None and self.favorites is not None:
+      from openpilot.starpilot.ui.onroad_now_playing import card_layout
+      shape = card_layout(placed, track, state.viewport_width)
+      if shape is not None and self.favorites.hit(x, y, state, overlay=('now_playing', shape[0])) != 'now_playing':
+        touch.cancel()
+        return False
+    return touch.touch(kind, x, y, state, placed, track)
 
   def _slc_touch(self, kind, x, y) -> bool:
     """Speed-limit confirmation taps; True while one owns the touch."""
@@ -609,8 +642,29 @@ class ProjectionOnroad:
       return claimed
     return gesture.claimed
 
+  def draw_touch_setup(self, x, y, done=False):
+    """One tap on this dot tells StarPort how the car reports touches."""
+    rl, role = self.native.rl, self.native.font_role.BOLD
+    if done:
+      text, size = "Touch is set up", 64
+      width = self.fonts.measure(text, role, size).width
+      text_x = max(30, x - 90 - width)
+      rl.draw_rectangle_rounded(rl.Rectangle(text_x - 24, y - size / 2 - 16, width + 48, size + 32), .4, 8, rl.Color(15, 13, 23, 200))
+      self.fonts.draw(text, role, size, text_x, y - size / 2)
+      return
+    rl.draw_circle(int(x), int(y), 56, rl.Color(15, 13, 23, 200))
+    rl.draw_circle_lines(int(x), int(y), 56, rl.Color(199, 174, 247, 255))
+    rl.draw_circle(int(x), int(y), 22, rl.Color(199, 174, 247, 255))
+    text, size = "Tap the dot to set up touch", 64
+    width = self.fonts.measure(text, role, size).width
+    text_x = max(30, x - 90 - width)
+    rl.draw_rectangle_rounded(rl.Rectangle(text_x - 24, y - size / 2 - 16, width + 48, size + 32), .4, 8, rl.Color(15, 13, 23, 200))
+    self.fonts.draw(text, role, size, text_x, y - size / 2)
+
   def cancel_touch(self):
     self.exit.cancel()
+    if self.now_playing_touch is not None:
+      self.now_playing_touch.cancel()
     if self._slc_input is not None:
       self._slc_input.cancel()
     if self.favorites is not None:

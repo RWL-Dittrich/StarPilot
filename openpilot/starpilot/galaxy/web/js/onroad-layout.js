@@ -1,8 +1,10 @@
+import { WikiHelp } from './wiki-help.js'
+import { GxCollapse } from './disclosure.js'
 import { ONROAD_LAYOUT_TEMPLATE } from "./onroad-layout-template.js"
 import { GxState } from "./state.js"
 import { guardUnload } from "./unload-guard.js"
 import { PollTimer, connectionError } from "./polling.js"
-import { reactive, watch } from "../vendor/vue/vue.esm-browser.js"
+import { nextTick, reactive, watch } from "../vendor/vue/vue.esm-browser.js"
 import { LayoutPreviewFeed, PREVIEW_SCENES, PreviewQueue, previewScene, sceneHidesWidget } from "./layout-preview.js"
 import { LEAD_INFO, PROJECTION_WORDMARK, editorSnapshot, projectionPayload } from "./projection-layout.js"
 import { GalaxySelect } from "./galaxy-select.js"
@@ -53,6 +55,9 @@ let makerPagesOpen = 0
 
 // Screen pixels a pointer may wobble before a press on a preview widget becomes a drag.
 const DRAG_SLOP = 6
+const CAMERA_IDS = ["pip_left", "pip_right"]
+// Let swipes scroll before an unarmed widget grabs.
+const HOLD_MS = 220
 
 export class OnroadLayoutFeed {
   constructor({ publish, projection = false, unauthorized = () => { }, fetcher = (...args) => fetch(...args),
@@ -149,9 +154,23 @@ export class OnroadLayoutFeed {
   }
 }
 
+// Which map and route provider the comma uses, so the navigation previews match what it draws.
+export const navLook = reactive({ map: "mapbox", routes: "mapbox" })
+export async function loadNavLook(fetcher = (...args) => fetch(...args)) {
+  try {
+    const response = await fetcher("./api/navigation/status", { credentials: "same-origin", cache: "no-store" })
+    const data = response.ok ? await response.json() : null
+    navLook.map = data?.mapProvider === "google" && data.hasGoogleKey ? "google" : "mapbox"
+    navLook.routes = data?.routeProvider === "google" && data.hasGoogleKey ? "google" : "mapbox"
+  } catch { /* The Mapbox look stays when navigation is unreachable. */ }
+}
+
 export const LayoutWidgetPreview = {
   props: ["widget", "palette", "profile", "scene", "clock24Hour", "native", "art"],
   computed: {
+    nav() { return navLook },
+    googleMap() { return navLook.map === "google" },
+    googleRoutes() { return navLook.routes === "google" },
     roadNameSize() { return Math.max(18, Math.min(this.widget.width, this.widget.height) * .075) },
   },
   methods: {
@@ -168,7 +187,7 @@ export const LayoutWidgetPreview = {
       <template v-if="native || art?.url && art.sprites?.sprites?.[widget.id]">
         <svg v-if="art?.url && art.sprites?.sprites?.[widget.id]"
           :x="art.sprites.sprites[widget.id].offsetX || 0" :y="art.sprites.sprites[widget.id].offsetY || 0"
-          :width="art.sprites.sprites[widget.id].width" :height="art.sprites.sprites[widget.id].height"
+          :width="widget.aspectRatio ? widget.width : art.sprites.sprites[widget.id].width" :height="widget.aspectRatio ? widget.height : art.sprites.sprites[widget.id].height"
           :viewBox="[art.sprites.sprites[widget.id].x, art.sprites.sprites[widget.id].y, art.sprites.sprites[widget.id].width, art.sprites.sprites[widget.id].height].join(' ')"
           preserveAspectRatio="xMinYMin meet" data-preview-source="runtime">
           <image :href="art.url" :width="art.sprites.width" :height="art.sprites.height" />
@@ -210,45 +229,148 @@ export const LayoutWidgetPreview = {
           :font-size="profile === 'large' ? 48 : 21" font-weight="600"
           style="filter: drop-shadow(2px 2px 1px #000000aa)">{{ clock24Hour ? '18:00' : '12:00 PM' }}</text>
       </template>
+      <g v-else-if="widget.kind === 'now_playing' && widget.size === 'big'">
+        <defs><linearGradient id="gx-np-wash" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8a3a52" /><stop offset=".45" stop-color="#5a2350" /><stop offset="1" stop-color="#22143f" /></linearGradient></defs>
+        <rect x="0" y="0" :width="widget.width" :height="widget.height" rx="40" fill="url(#gx-np-wash)" :fill-opacity="(widget.opacity ?? 85) / 100" />
+        <rect x="40" y="20" width="138" height="36" rx="18" fill="#000000" fill-opacity=".35" stroke="#ffffff" stroke-opacity=".12" />
+        <path d="M61 47 V29 H69 V32 H63.6 V45" fill="#c7aef7" /><circle cx="61" cy="46" r="4.3" fill="#c7aef7" />
+        <text x="82" y="44" font-size="18" font-weight="600" fill="#f5f2fc">StarPilot</text>
+        <text :x="widget.width - 40" y="44" text-anchor="end" font-size="18" fill="#d6d2e0">Spotify</text>
+        <text :x="widget.width / 2" y="92" text-anchor="middle" font-size="30" font-weight="600" fill="#f5f2fc">Midnight City<tspan font-weight="400" fill="#d6d2e0">  •  M83</tspan></text>
+        <rect x="40" y="112" :width="widget.width - 80" height="10" rx="5" fill="#ffffff" fill-opacity=".18" />
+        <rect x="40" y="112" :width="(widget.width - 80) * .38" height="10" rx="5" fill="#ffffff" />
+        <text x="40" y="144" font-size="16" fill="#b8b2c8">1:32</text>
+        <text :x="widget.width - 40" y="144" text-anchor="end" font-size="16" fill="#b8b2c8">4:03</text>
+        <g :transform="'translate(' + (widget.width / 2 - 192) + ' 208)'" fill="none" stroke="#d6d2e0" stroke-width="3.5" stroke-linecap="round">
+          <path d="M-16 -10 C0 -10 0 10 18 10 M-16 10 C0 10 0 -10 18 -10 M13 -16 L19 -10 L13 -4 M13 4 L19 10 L13 16" />
+        </g>
+        <g :transform="'translate(' + (widget.width / 2 - 96) + ' 208)'"><circle r="32" fill="#ffffff" fill-opacity=".14" /><path d="M9 -12 L9 12 L-9 0 Z M-14 -12 H-9 V12 H-14 Z" fill="#f5f2fc" /></g>
+        <g :transform="'translate(' + widget.width / 2 + ' 208)'"><circle r="36" fill="#f5f2fc" /><path d="M-10 -13 H-3 V13 H-10 Z M3 -13 H10 V13 H3 Z" fill="#0f0d17" /></g>
+        <g :transform="'translate(' + (widget.width / 2 + 96) + ' 208)'"><circle r="32" fill="#ffffff" fill-opacity=".14" /><path d="M-9 -12 L-9 12 L9 0 Z M9 -12 H14 V12 H9 Z" fill="#f5f2fc" /></g>
+        <g :transform="'translate(' + (widget.width / 2 + 192) + ' 208)'" fill="none" stroke="#d6d2e0" stroke-width="4" stroke-linecap="round">
+          <path d="M-14 -9 H12 M14 9 H-12 M-16 -11 V4 M16 11 V-4" /><path d="M10 -16 L19 -9 L10 -2 Z M-10 16 L-19 9 L-10 2 Z" fill="#d6d2e0" stroke="none" />
+        </g>
+      </g>
       <g v-else-if="widget.kind === 'now_playing'">
-        <rect x="0" y="0" :width="widget.width" :height="widget.height" :rx="widget.height / 2" fill="#0f0d17" :fill-opacity="(widget.opacity ?? 85) / 100 * .92" />
-        <circle :cx="widget.height / 2" :cy="widget.height / 2" r="30" fill="#c7aef7" />
-        <rect :x="widget.height / 2 - 9" :y="widget.height / 2 - 12" width="6" height="24" rx="3" fill="#0f0d17" />
-        <rect :x="widget.height / 2 + 3" :y="widget.height / 2 - 12" width="6" height="24" rx="3" fill="#0f0d17" />
-        <text :x="widget.height + 4" y="40" font-size="30" font-weight="600" fill="#f5f2fc">Midnight City</text>
-        <text :x="widget.height + 4" y="68" font-size="22" fill="#b8b2c8">M83</text>
-        <rect :x="widget.height + 4" :y="widget.height - 16" :width="widget.width - widget.height * 1.5 - 4" height="4" rx="2" fill="#ffffff" fill-opacity=".2" />
-        <rect :x="widget.height + 4" :y="widget.height - 16" :width="(widget.width - widget.height * 1.5 - 4) * .38" height="4" rx="2" fill="#c7aef7" />
+        <defs><linearGradient id="gx-np-wash-small" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#8a3a52" /><stop offset=".45" stop-color="#5a2350" /><stop offset="1" stop-color="#22143f" /></linearGradient></defs>
+        <rect x="0" y="0" :width="widget.width" :height="widget.height" :rx="widget.height / 2" fill="url(#gx-np-wash-small)" :fill-opacity="(widget.opacity ?? 85) / 100" />
+        <circle :cx="widget.height / 2" :cy="widget.height / 2" r="36" fill="#f5f2fc" />
+        <rect :x="widget.height / 2 - 10" :y="widget.height / 2 - 13" width="7" height="26" rx="3" fill="#0f0d17" />
+        <rect :x="widget.height / 2 + 3" :y="widget.height / 2 - 13" width="7" height="26" rx="3" fill="#0f0d17" />
+        <text :x="widget.height + 4" y="42" font-size="26" font-weight="600" fill="#f5f2fc">Midnight City</text>
+        <text :x="widget.height + 4" y="71" font-size="19" fill="#d6d2e0">M83</text>
+        <g :transform="'translate(' + (widget.width - 42) + ' ' + widget.height / 2 + ') scale(1.3)'" fill="#c7aef7">
+          <path d="M0 7 V-11 H8 V-7.8 H2.6 V7" /><circle cx="-3" cy="7" r="5" />
+        </g>
+      </g>
+      <g v-else-if="widget.kind === 'network_signal' && !['horizontal', 'vertical'].includes(widget.size)" :transform="'scale(' + widget.width / 112 + ')'">
+        <rect width="112" :height="(widget.bluetooth === false ? 102 : 140) + (widget.wifiName ? 22 : 0)" rx="24" fill="#0f0d17" :fill-opacity="235 / 255 * (widget.opacity ?? 85) / 100" />
+        <text v-if="widget.wifiName" x="56" y="21" text-anchor="middle" font-size="15" font-weight="600" fill="#f5f2fc">Home Wi-Fi</text>
+        <g :transform="widget.wifiName ? 'translate(0 22)' : null">
+          <g>
+            <path d="M17.0 78.5A45 45 0 0 1 11.2 60.7" fill="none" stroke="#f5f2fc" stroke-width="7" />
+            <path d="M95.0 78.5A45 45 0 0 0 100.8 60.7" fill="none" stroke="#a480f2" stroke-width="7" />
+            <path d="M11.0 56.8A45 45 0 0 1 14.6 38.4" fill="none" stroke="#f5f2fc" stroke-width="7" />
+            <path d="M101.0 56.8A45 45 0 0 0 97.4 38.4" fill="none" stroke="#a480f2" stroke-width="7" />
+            <path d="M16.3 34.9A45 45 0 0 1 28.3 20.5" fill="none" stroke="#ffffff2b" stroke-width="7" />
+            <path d="M95.7 34.9A45 45 0 0 0 83.7 20.5" fill="none" stroke="#a480f2" stroke-width="7" />
+            <path d="M31.5 18.3A45 45 0 0 1 49.0 11.6" fill="none" stroke="#ffffff2b" stroke-width="7" />
+            <path d="M80.5 18.3A45 45 0 0 0 63.0 11.6" fill="none" stroke="#a480f2" stroke-width="7" />
+          </g>
+          <g :transform="widget.bluetooth === false ? 'translate(0 8)' : null">
+            <rect x="34.0" y="48" width="3" height="4" fill="#b8b2c8" />
+            <rect x="38.5" y="44" width="3" height="8" fill="#b8b2c8" />
+            <rect x="43.0" y="40" width="3" height="12" fill="#b8b2c8" />
+            <rect x="47.5" y="36" width="3" height="16" fill="#b8b2c8" />
+            <circle cx="69" cy="50" r="2" fill="#a480f2" />
+            <path d="M64.2 45.7A6.5 6.5 0 0 1 73.8 45.7" fill="none" stroke="#a480f2" stroke-width="2.4" />
+            <path d="M60.5 42.3A11.5 11.5 0 0 1 77.5 42.3" fill="none" stroke="#a480f2" stroke-width="2.4" />
+          </g>
+          <g v-if="widget.bluetooth !== false">
+            <path d="M56 66V80M56 66L60.5 69.5L51.5 76M51.5 70L60.5 76.5L56 80" fill="none" stroke="#6eafff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            <text x="56" y="106" text-anchor="middle" font-size="15" font-weight="600" fill="#f5f2fc">iPhone 15</text>
+            <text x="56" y="126" text-anchor="middle" font-size="15" font-weight="600" fill="#f5f2fc">AirPods</text>
+          </g>
+          <text v-else x="56" y="84" text-anchor="middle" font-size="14" font-weight="600" fill="#f5f2fc">Wi-Fi</text>
+        </g>
+      </g>
+      <g v-else-if="widget.kind === 'network_signal' && widget.size === 'horizontal'" :transform="'scale(' + widget.width / 268 + ')'">
+        <rect width="268" :height="112 + (widget.wifiName ? 22 : 0)" rx="28" fill="#0f0d17" :fill-opacity="235 / 255 * (widget.opacity ?? 85) / 100" />
+        <text v-if="widget.wifiName" x="24" y="23" font-size="16" font-weight="600" fill="#f5f2fc">Home Wi-Fi</text>
+        <g :transform="widget.wifiName ? 'translate(0 22)' : null">
+          <g :transform="widget.bluetooth === false ? 'translate(0 11)' : null">
+            <rect x="24" y="29" width="3" height="4" fill="#b8b2c8" />
+            <rect x="28.5" y="25" width="3" height="8" fill="#b8b2c8" />
+            <rect x="33" y="21" width="3" height="12" fill="#b8b2c8" />
+            <rect x="37.5" y="17" width="3" height="16" fill="#b8b2c8" />
+            <rect x="56" y="22" width="41" height="8" rx="4" fill="#f5f2fc" />
+            <rect x="105" y="22" width="41" height="8" rx="4" fill="#f5f2fc" />
+            <rect x="154" y="22" width="41" height="8" rx="4" fill="#ffffff2b" />
+            <rect x="203" y="22" width="41" height="8" rx="4" fill="#ffffff2b" />
+          </g>
+          <g :transform="widget.bluetooth === false ? 'translate(0 19)' : null">
+            <circle cx="33" cy="61" r="2" fill="#a480f2" />
+            <path d="M28.17 56.65A6.5 6.5 0 0 1 37.83 56.65" fill="none" stroke="#a480f2" stroke-width="2.4" />
+            <path d="M24.45 53.30A11.5 11.5 0 0 1 41.55 53.30" fill="none" stroke="#a480f2" stroke-width="2.4" />
+            <rect x="56" y="52" width="41" height="8" rx="4" fill="#a480f2" />
+            <rect x="105" y="52" width="41" height="8" rx="4" fill="#a480f2" />
+            <rect x="154" y="52" width="41" height="8" rx="4" fill="#a480f2" />
+            <rect x="203" y="52" width="41" height="8" rx="4" fill="#a480f2" />
+          </g>
+          <g v-if="widget.bluetooth !== false">
+            <path d="M33 79V93M33 79L37.5 82.5L28.5 89M28.5 83L37.5 89.5L33 93" fill="none" stroke="#6eafff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            <text x="56" y="92" font-size="16" font-weight="600" fill="#f5f2fc">iPhone 15, AirPods</text>
+          </g>
+        </g>
+      </g>
+      <g v-else-if="widget.kind === 'network_signal' && widget.size === 'vertical'" :transform="'scale(' + widget.width / 112 + ')'">
+        <rect width="112" :height="196 + (widget.wifiName ? 22 : 0)" rx="24" fill="#0f0d17" :fill-opacity="235 / 255 * (widget.opacity ?? 85) / 100" />
+        <text v-if="widget.wifiName" x="56" y="21" text-anchor="middle" font-size="15" font-weight="600" fill="#f5f2fc">Home Wi-Fi</text>
+        <g :transform="widget.wifiName ? 'translate(0 22)' : null">
+          <g :transform="widget.bluetooth === false ? 'translate(0 32)' : null">
+            <circle cx="34" cy="85" r="8" fill="#f5f2fc" />
+            <circle cx="34" cy="64" r="8" fill="#f5f2fc" />
+            <circle cx="34" cy="43" r="8" fill="#ffffff2b" />
+            <circle cx="34" cy="22" r="8" fill="#ffffff2b" />
+            <rect x="25.75" y="114" width="3" height="4" fill="#b8b2c8" />
+            <rect x="30.25" y="110" width="3" height="8" fill="#b8b2c8" />
+            <rect x="34.75" y="106" width="3" height="12" fill="#b8b2c8" />
+            <rect x="39.25" y="102" width="3" height="16" fill="#b8b2c8" />
+            <circle cx="78" cy="85" r="8" fill="#a480f2" />
+            <circle cx="78" cy="64" r="8" fill="#a480f2" />
+            <circle cx="78" cy="43" r="8" fill="#a480f2" />
+            <circle cx="78" cy="22" r="8" fill="#a480f2" />
+            <circle cx="78" cy="116" r="2" fill="#a480f2" />
+            <path d="M73.17 111.65A6.5 6.5 0 0 1 82.83 111.65" fill="none" stroke="#a480f2" stroke-width="2.4" />
+            <path d="M69.45 108.30A11.5 11.5 0 0 1 86.55 108.30" fill="none" stroke="#a480f2" stroke-width="2.4" />
+          </g>
+          <g v-if="widget.bluetooth !== false">
+            <line x1="14" y1="128" x2="98" y2="128" stroke="#ffffff2b" stroke-width="1.5" />
+            <path d="M56 135V149M56 135L60.5 138.5L51.5 145M51.5 139L60.5 145.5L56 149" fill="none" stroke="#6eafff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+            <text x="56" y="167" text-anchor="middle" font-size="15" font-weight="600" fill="#f5f2fc">iPhone 15</text>
+            <text x="56" y="186" text-anchor="middle" font-size="15" font-weight="600" fill="#f5f2fc">AirPods</text>
+          </g>
+        </g>
       </g>
       <g v-else-if="widget.kind === 'jetlink_status'">
         <rect x="0" y="0" :width="widget.width" :height="widget.height" :rx="widget.height / 2" fill="#0f0d17" :fill-opacity="(widget.opacity ?? 85) / 100 * .92" />
-        <circle :cx="widget.height / 2" :cy="widget.height / 2" r="9" fill="#46c86e" />
-        <text :x="widget.height - 6" y="38" font-size="28" font-weight="600" fill="#f5f2fc">Link up</text>
-        <text :x="widget.height - 6" y="66" font-size="22" fill="#b8b2c8">Jetlink • iPhone</text>
-        <text :x="widget.width - 70" :y="widget.height / 2 + 12" text-anchor="end" font-size="34" font-weight="600" fill="#f5f2fc">24.6</text>
-        <text :x="widget.width - 30" :y="widget.height / 2 + 12" text-anchor="end" font-size="22" fill="#b8b2c8">ms</text>
+        <circle cx="40" cy="30" r="7.5" fill="#46c86e" />
+        <text x="58" y="36" font-size="20" font-weight="700" letter-spacing="0.6" fill="#d6d2e0">BIG • JETLINK</text>
+        <text :x="widget.width - 62" y="37" text-anchor="end" font-size="24" font-weight="700" fill="#f5f2fc">24.6</text>
+        <text :x="widget.width - 32" y="37" text-anchor="end" font-size="18" fill="#d6d2e0">ms</text>
+        <text x="32" y="75" font-size="28" font-weight="600" fill="#f5f2fc">Cinque v3</text>
       </g>
       <template v-else-if="widget.kind === 'speed_limit'">
         <text x="0" y="10" font-size="24" font-weight="500">LIMIT</text>
         <path v-if="pending(scene)" d="M90 12 V-8 M84 -2 L90 -8 L96 -2" fill="none" :stroke="palette.text || '#ffffff'" stroke-width="2" />
         <text x="0" y="66" font-size="58" font-weight="700">45<tspan dx="10" font-size="36" font-weight="500">+5</tspan></text>
       </template>
-      <template v-else-if="widget.kind === 'speed_limit_actions'">
-        <template v-if="pending(scene)">
-          <line :x1="widget.width / 2" :x2="widget.width / 2" :y1="profile === 'large' ? 46 : 6" :y2="profile === 'large' ? 98 : 42" stroke="#9bb2adaa" />
-          <text v-for="(label, index) in ['Accept', 'Decline']" :key="label" :x="widget.width * (index ? .75 : .25)"
-            :y="profile === 'large' ? 72 : 24" text-anchor="middle" dominant-baseline="middle"
-            :font-size="profile === 'large' ? 64 : 50" font-weight="500">{{ label }}</text>
-        </template>
-        <text v-else :x="widget.width / 2" :y="profile === 'large' ? 72 : 24" text-anchor="middle"
-          dominant-baseline="middle" :font-size="profile === 'large' ? 48 : 28">Toyota guidance</text>
-      </template>
       <g v-else-if="widget.kind === 'torque_bar'" fill="none" stroke="white" stroke-linecap="round">
         <path :d="'M 12 ' + widget.height * .8 + ' Q ' + widget.width / 2 + ' ' + widget.height * .55 + ' ' + (widget.width - 12) + ' ' + widget.height * .8" :stroke-width="widget.height * .18" opacity=".3" />
         <path :d="'M ' + widget.width / 2 + ' ' + widget.height * .68 + ' Q ' + widget.width * .65 + ' ' + widget.height * .68 + ' ' + widget.width * .8 + ' ' + widget.height * .74" :stroke-width="widget.height * .18" opacity=".9" />
       </g>
       <g v-else-if="widget.kind === 'pip_camera'">
-        <circle :cx="widget.width / 2" :cy="widget.height / 2" :r="widget.width / 2 - 3" fill="#152c39" stroke="#5ee5ee" stroke-width="3" />
+        <circle :cx="widget.width / 2" :cy="widget.height / 2" :r="widget.width / 2 - 3" fill="#152c39" fill-opacity=".35" stroke="#5ee5ee" stroke-width="3" />
         <text :x="widget.width / 2" :y="widget.height / 2" text-anchor="middle" :font-size="widget.height / 10">{{ widget.label }}</text>
       </g>
       <g v-else-if="['nav_home', 'nav_work', 'bookmark'].includes(widget.kind)" :opacity="(widget.opacity ?? 100) / 100">
@@ -270,29 +392,37 @@ export const LayoutWidgetPreview = {
           <path d="M38 48 H78 M67 37 L78 48 L67 59" />
         </g>
       </g>
-      <g v-else-if="widget.kind === 'jetlink_status'">
-        <rect :width="widget.width" :height="widget.height" :rx="widget.height / 2" fill="#0f0d17" :fill-opacity="235 / 255 * (widget.opacity ?? 85) / 100" />
-        <circle :cx="widget.height / 2" :cy="widget.height / 2" r="9" fill="#46c86e" />
-        <text :x="widget.height - 6" y="40" font-size="28" font-weight="600" fill="#f5f2fc">Link up</text>
-        <text :x="widget.height - 6" y="68" font-size="22" fill="#b8b2c8">Jetlink • iPhone</text>
-        <text :x="widget.width - 70" y="52" text-anchor="end" font-size="34" font-weight="600" fill="#f5f2fc">24.6</text>
-        <text :x="widget.width - 30" y="52" text-anchor="end" font-size="22" fill="#b8b2c8">ms</text>
+      <g v-else-if="widget.kind === 'nav_card' && profile === 'compact'">
+        <rect x="1" y="1" :width="widget.width - 2" :height="widget.height - 2" rx="20" fill="#0f0d17" stroke="#a07edcbe" stroke-width="2" />
+        <path d="M42 78 V42 Q42 32 52 32 H78 M64 18 L78 32 L64 46" fill="none" stroke="white" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" />
+        <text x="104" y="46" font-size="28" font-weight="700" fill="white">500 ft</text>
+        <text x="104" y="74" font-size="18" font-weight="600" fill="#ded6f4">Turn right onto Main St</text>
+        <text x="18" y="118" font-size="16" fill="#ebe1ff">2.4 mi · 6 min</text>
+        <text :x="widget.width - 18" y="118" text-anchor="end" font-size="16" fill="#ebe1ff">ETA 3:51 PM</text>
       </g>
-      <g v-else-if="widget.kind === 'nav_card'">
-        <rect x="1" y="1" :width="widget.width - 2" :height="widget.height - 2" rx="39" fill="#0f0d17f5" stroke="#a07edcbe" stroke-width="2" />
-        <text x="24" y="66" font-size="54" font-weight="700" fill="white">500 ft</text>
-        <text x="24" y="100" font-size="30" font-weight="600" fill="#ded6f4">Turn right onto Las Vegas Blvd</text>
-        <g v-for="(lane, i) in [['S', 0], ['S', 0], ['S', 0], ['R', 1], ['R', 1]]" :key="i" :transform="'translate(' + ((widget.width - 320) / 2 + i * 66) + ' 116)'">
+      <svg v-else-if="widget.kind === 'nav_card'" :width="widget.width" :height="widget.height" viewBox="0 0 560 255">
+        <rect x="1" y="1" :width="560 - 2" :height="253" rx="39" fill="#0f0d17f5" stroke="#a07edcbe" stroke-width="2" />
+        <text v-if="!googleRoutes" x="24" y="66" font-size="54" font-weight="700" fill="white">500 ft</text>
+        <text v-if="!googleRoutes" x="24" y="100" font-size="30" font-weight="600" fill="#ded6f4">Turn right onto Las Vegas Blvd</text>
+        <template v-if="!googleRoutes">
+        <g v-for="(lane, i) in [['S', 0], ['S', 0], ['S', 0], ['R', 1], ['R', 1]]" :key="i" :transform="'translate(' + ((560 - 320) / 2 + i * 66) + ' 116)'">
           <rect width="56" height="44" rx="13" :fill="lane[1] ? '#4e3e80' : '#222030'" />
           <g transform="translate(28 22)" fill="none" :stroke="lane[1] ? '#ffffff' : '#70688a'" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round">
             <path v-if="lane[0] === 'S'" d="M0 13 V-12 M-8 -4 L0 -12 L8 -4" />
             <path v-else d="M-8 13 V0 Q-8 -7 -1 -7 H10 M4 -13 L10 -7 L4 -1" />
           </g>
         </g>
-        <rect x="24" y="171" :width="widget.width - 48 - 190" height="6" rx="3" fill="#a07edc3c" />
-        <rect x="24" y="171" :width="(widget.width - 48 - 190) * .35" height="6" rx="3" fill="#b296ff" />
-        <text :x="widget.width - 24" y="182" text-anchor="end" font-size="22" font-weight="600" fill="#ebe1ff">ETA 3:51 PM</text>
-      </g>
+        </template>
+        <template v-else>
+          <g transform="translate(24 28)" fill="none" stroke="white" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 56 V28 Q12 18 22 18 H48 M34 4 L48 18 L34 32" /></g>
+          <text x="104" y="66" font-size="54" font-weight="700" fill="white">500 ft</text>
+          <text x="104" y="100" font-size="30" font-weight="600" fill="#ded6f4">Las Vegas Blvd</text>
+          <text :x="560 - 24" y="150" text-anchor="end" font-size="27" font-weight="500" fill="#d6d2e2">2.4 mi | 6 min</text>
+        </template>
+        <rect x="24" y="171" :width="560 - 48 - 190" height="6" rx="3" fill="#a07edc3c" />
+        <rect x="24" y="171" :width="(560 - 48 - 190) * .35" height="6" rx="3" fill="#b296ff" />
+        <text :x="560 - 24" y="182" text-anchor="end" font-size="22" font-weight="600" fill="#ebe1ff">ETA 3:51 PM</text>
+      </svg>
       <g v-else-if="widget.kind === 'nav_map'">
         <defs>
           <radialGradient id="gx-nav-map-fade" cx=".5" cy=".55" r=".75"><stop offset=".55" stop-color="white" /><stop offset="1" stop-color="white" stop-opacity="0" /></radialGradient>
@@ -300,6 +430,15 @@ export const LayoutWidgetPreview = {
         </defs>
         <g mask="url(#gx-nav-map-mask)" :transform="'scale(' + widget.width / 600 + ' ' + widget.height / 450 + ')'" fill="none" stroke-linecap="round" stroke-linejoin="round">
           <g :opacity="(widget.opacity ?? 50) / 100">
+          <template v-if="googleMap">
+            <rect width="600" height="450" fill="#e8eaed" />
+            <path d="M440 -20 L640 -20 L640 200 Q540 170 440 -20 Z" fill="#aadaff" />
+            <path d="M-20 120 Q200 150 640 90 M90 -20 L130 480 M430 -20 Q400 200 470 480 M-20 330 L640 360 M260 -20 L250 480" stroke="#ffffff" stroke-width="12" vector-effect="non-scaling-stroke" />
+            <path d="M-20 120 Q200 150 640 90" stroke="#34a853" stroke-width="5" vector-effect="non-scaling-stroke" />
+            <path d="M-20 330 L640 360" stroke="#ea4335" stroke-width="5" vector-effect="non-scaling-stroke" />
+            <path d="M260 -20 L250 480" stroke="#fbbc04" stroke-width="5" vector-effect="non-scaling-stroke" />
+          </template>
+          <template v-else>
           <rect width="600" height="450" fill="#0b0f16" opacity=".45" />
           <g stroke="#000000a8" vector-effect="non-scaling-stroke">
             <path d="M-20 120 Q200 150 640 90 M90 -20 L130 480 M430 -20 Q400 200 470 480 M-20 330 L640 360 M260 -20 L250 480" stroke-width="11" vector-effect="non-scaling-stroke" />
@@ -307,6 +446,7 @@ export const LayoutWidgetPreview = {
           <path d="M-20 120 Q200 150 640 90 M-20 330 L640 360" stroke="#ebf0f5" stroke-width="6" vector-effect="non-scaling-stroke" />
           <path d="M90 -20 L130 480 M430 -20 Q400 200 470 480" stroke="#bec8d2" stroke-width="4" vector-effect="non-scaling-stroke" />
           <path d="M260 -20 L250 480" stroke="#ffc45c" stroke-width="8" vector-effect="non-scaling-stroke" />
+          </template>
           </g>
           <path d="M300 330 Q258 300 254 250 L262 -20" stroke="#8f6bff55" stroke-width="20" vector-effect="non-scaling-stroke" />
           <path d="M300 330 Q258 300 254 250 L262 -20" stroke="#a98bff" stroke-width="9" vector-effect="non-scaling-stroke" />
@@ -318,6 +458,7 @@ export const LayoutWidgetPreview = {
           <rect :x="-roadNameSize * 4.4" y="0" :width="roadNameSize * 8.8" :height="roadNameSize * 1.55" :rx="roadNameSize * .78" fill="#080c14be" />
           <text x="0" :y="roadNameSize * 1.12" text-anchor="middle" :font-size="roadNameSize" fill="#eceef6">Desert Inn Road</text>
         </g>
+        <text v-if="googleMap" x="16" :y="widget.height - 12" :font-size="Math.max(14, Math.min(widget.width, widget.height) * .04)" font-weight="600" fill="#f0f2fa">Google Maps</text>
       </g>
       <template v-else>
         <rect :width="widget.width" :height="widget.height" :fill="palette.cardFill" :stroke="palette.cardBorder" />
@@ -328,7 +469,7 @@ export const LayoutWidgetPreview = {
 }
 
 export const OnroadLayoutPage = {
-  components: { GxState, LayoutWidgetPreview, GalaxySelect, GxNotice, GxDialog, GalaxySettingRow },
+  components: { WikiHelp, GxCollapse, GxState, LayoutWidgetPreview, GalaxySelect, GxNotice, GxDialog, GalaxySettingRow },
   props: {
     projection: { type: Boolean, default: false }, mode: { type: String, required: true }, unauthorized: { type: Function, required: true },
     initialPanel: { type: String, default: "widgets" }
@@ -337,9 +478,9 @@ export const OnroadLayoutPage = {
   setup(props) {
     const state = reactive({
       status: "idle", data: null, draft: null, needsReload: false, error: "", notice: "",
-      profile: "large", scene: "general", selected: null, layerDrag: null, drag: null, discard: null, leavePresentation: null, removeConfirm: null, colorError: "", placementError: "",
+      profile: "large", scene: "general", selected: null, layerDrag: null, drag: null, discard: null, leavePresentation: null, removeConfirm: null, pipUnlocked: {}, pipUnlockConfirm: null, colorError: "", placementError: "",
       inspectorPanel: ["widgets", "edit", "road", "display"].includes(props.initialPanel) && !props.projection ? props.initialPanel : "widgets", showFavoriteZones: false, showEditingAids: loadAidsPreference(),
-      aboutOpen: false, tipsOpen: false, moreOpen: false, widgetsHelpOpen: false, stuck: { leaveBar: false, pinned: false, sections: false }, openColor: null, art: { status: "idle", error: "", url: null, sprites: null }, backdrop: { status: "idle", error: "", url: null },
+      aboutOpen: false, tipsOpen: false, moreOpen: false, widgetsHelpOpen: false, stuck: { leaveBar: false, pinned: false, sections: false }, shrunk: false, touchArmed: null, openColor: null, art: { status: "idle", error: "", url: null, sprites: null }, backdrop: { status: "idle", error: "", url: null },
       hiddenPreviewWidgets: loadPreviewVisibility(props.projection), sceneHiddenPreviewWidgets: {}, snapEnabled: loadSnapPreference(), snapGuides: [], history: { undo: [], redo: [], group: null }
     })
     let deferred = null
@@ -371,8 +512,8 @@ export const OnroadLayoutPage = {
       if (update.data) {
         if (!state.data && update.data.activeProfile) state.profile = update.data.activeProfile
         if (!update.data.metadata.profiles[state.profile]) state.profile = Object.keys(update.data.metadata.profiles)[0]
-        if (!Object.hasOwn(update.data.metadata.profiles[state.profile].widgets, state.selected) ||
-            update.data.metadata.profiles[state.profile].widgets[state.selected]?.hidden === true)
+        if ((!state.data || state.selected != null) && (!Object.hasOwn(update.data.metadata.profiles[state.profile].widgets, state.selected) ||
+            update.data.metadata.profiles[state.profile].widgets[state.selected]?.hidden === true))
           state.selected = Object.keys(update.data.metadata.profiles[state.profile].widgets)[0] || null
         state.colorError = ""
         state.placementError = ""
@@ -414,6 +555,16 @@ export const OnroadLayoutPage = {
     watch(() => props.mode, (mode) => {
       if (mode !== "local") { backdropFeed.stop(); artFeed.stop() }
     })
+    // Coming back to Widgets returns to where the list was left.
+    let widgetsScroll = null
+    watch(() => state.inspectorPanel, (panel, previous) => {
+      if (typeof window === "undefined") return
+      if (previous === "widgets") widgetsScroll = window.scrollY
+      if (panel === "widgets" && widgetsScroll != null) {
+        const y = widgetsScroll
+        nextTick(() => window.scrollTo(0, y))
+      }
+    }, { flush: "sync" })
     return { state, feed, backdropFeed, artFeed, scenes: PREVIEW_SCENES, projectionWordmark: PROJECTION_WORDMARK }
   },
   computed: {
@@ -488,6 +639,16 @@ export const OnroadLayoutPage = {
       return orderedWidgetIds(this.state.draft, this.state.data.metadata, this.state.profile)
         .slice().reverse().map(id => this.widgets.find(widget => widget.id === id)).filter(widget => widget && this.layout[widget.id].enabled)
     },
+    cameraIds() { return CAMERA_IDS.filter(id => Object.hasOwn(this.profile?.widgets || {}, id)) },
+    // Cameras directly below the frontmost controls.
+    camerasOnTop() {
+      const order = orderedWidgetIds(this.state.draft, this.state.data.metadata, this.state.profile)
+        .filter(id => !this.profile.widgets[id]?.frontmost)
+      const top = []
+      for (let index = order.length - 1; index >= 0 && this.cameraIds.includes(order[index]); index--) top.push(order[index])
+      return top
+    },
+    lockedCameraIds() { return this.camerasOnTop.filter(id => !this.state.pipUnlocked[id]) },
     listWidgets() { return this.state.layerDrag ? this.state.layerDrag.rows.map(id => this.widgets.find(widget => widget.id === id)) : this.layerWidgets },
     selectionBox() {
       if (!this.state.layerDrag) return null
@@ -496,6 +657,34 @@ export const OnroadLayoutPage = {
       return {
         x: this.previewX(this.state.selected), y: this.selectedPosition.y - widget.visualInsetTop,
         width: widget.width, height: widget.height + widget.visualInsetTop + widget.visualInsetBottom
+      }
+    },
+    // On touch, a magnified copy of the area around the dragged widget sits clear of the finger.
+    loupe() {
+      const drag = this.state.drag
+      if (!drag?.touch || !drag.moved || drag.resize || (drag.fromTray && !drag.inside) || drag.clientX == null || !this.$refs.preview) return null
+      const rect = this.$refs.preview.getBoundingClientRect(), viewWidth = window.innerWidth, viewHeight = window.innerHeight
+      if (!rect.width) return null
+      const gap = 48, edge = 8, x = drag.clientX, y = drag.clientY
+      let width = Math.round(Math.max(150, Math.min(240, viewWidth / 2 - 8))), height = Math.round(width * .62)
+      let left = Math.max(edge, Math.min(viewWidth - width - edge, x - width / 2)), top = y - gap - height
+      if (top < edge) {
+        // No room above: sit beside the finger on the roomier side, narrower if needed, before falling back to below.
+        const right = x < viewWidth / 2, beside = Math.min(width, Math.floor((right ? viewWidth - x : x) - 24 - edge))
+        if (beside >= 140) {
+          width = beside
+          height = Math.round(width * .62)
+          left = right ? x + 24 : x - 24 - width
+          top = Math.max(edge, Math.min(viewHeight - height - edge, y - height / 2))
+        } else top = Math.min(viewHeight - height - edge, y + gap)
+      }
+      const [widgetWidth, widgetHeight] = widgetSize(this.profile.widgets[drag.id], this.layout[drag.id])
+      const span = Math.max(width / (rect.width / this.profile.width * 2), widgetWidth * 1.5, widgetHeight * 1.5 * width / height)
+      const spanY = span * height / width
+      const centerX = this.previewX(drag.id) + widgetWidth / 2, centerY = this.layout[drag.id].y + widgetHeight / 2
+      return {
+        viewBox: [centerX - span / 2, centerY - spanY / 2, span, spanY].map(value => Math.round(value * 10) / 10).join(" "),
+        style: { left: Math.round(left) + "px", top: Math.round(top) + "px", width: width + "px", height: height + "px" }
       }
     },
     activeWidgets() { return this.widgets.filter(({ id }) => this.layout[id].enabled) },
@@ -511,7 +700,11 @@ export const OnroadLayoutPage = {
           ...widget, width, height, ...(widget.iconSize ? { display: this.layout[widget.id].display } : {}),
           ...(widget.opacity ? { opacity: this.layout[widget.id].opacity } : {}),
           ...(widget.backgroundToggle ? { background: this.layout[widget.id].background } : {}),
-          ...(widget.collapseToggle ? { collapse: this.layout[widget.id].collapse } : {})
+          ...(widget.collapseToggle ? { collapse: this.layout[widget.id].collapse } : {}),
+          ...(widget.bluetoothToggle ? { bluetooth: this.layout[widget.id].bluetooth } : {}),
+          ...(widget.wifiNameHeight ? { wifiName: this.layout[widget.id].wifiName } : {}),
+          ...(widget.sizes ? { size: this.layout[widget.id].size } : {}),
+          ...(widget.scale ? { scale: this.layout[widget.id].scale } : {})
         }
       })
     },
@@ -519,6 +712,10 @@ export const OnroadLayoutPage = {
       (!this.layout[id].enabled || (this.state.drag?.fromTray && this.state.drag.id === id))) },
     availableProfiles() { return this.state.data?.supportedProfiles || (this.state.data?.activeProfile ? [this.state.data.activeProfile] : []) },
     selectedWidget() { return this.profile?.widgets[this.state.selected] },
+    sizeChoice() {
+      const signal = this.selectedWidget?.kind === 'network_signal'
+      return { label: signal ? 'Style' : 'Size', options: signal ? Object.keys(this.selectedWidget.sizes) : ['big', 'small'] }
+    },
     selectedPosition() { return this.layout?.[this.state.selected] },
     selectedSize() { return this.selectedWidget ? widgetSize(this.selectedWidget, this.selectedPosition) : [0, 0] },
     // A finger covers the preview chip, so touch drags show the alignment in the sticky save bar.
@@ -566,16 +763,25 @@ export const OnroadLayoutPage = {
     stockConfidence() { return this.displayValue("StockConfidenceBallWidget") === "Off" },
   },
   mounted() {
-    if (this.mode === "local") this.feed.start()
+    if (this.mode === "local") { this.feed.start(); loadNavLook() }
     this._stopUnloadGuard = guardUnload(() => this.dirty || this.state.status === "saving")
     // Double-tap zoom stays off across the whole page, app bar included, while a maker page is open.
     if (makerPagesOpen++ === 0) document.documentElement.classList.add("gx-maker-open")
     this.observePinned()
+    this._onOutsideClick = (event) => {
+      const target = event.target
+      if (event.composedPath().includes(this.$el) || !target?.closest ||
+          target.closest(".gx-select-menu, [role='listbox'], [role='dialog'], dialog, .gx-dialog")) return
+      this.deselectWidget()
+    }
+    document.addEventListener("click", this._onOutsideClick)
   },
   updated() { this.observePinned() },
   beforeUnmount() { this.cancelDrag(); this.feed.stop(); this.backdropFeed.stop(); this.artFeed.stop(); this._stopUnloadGuard(); this._pinObserver?.disconnect(); this.unwatchRelease(); this._closeFloating?.()
     if (--makerPagesOpen === 0) document.documentElement.classList.remove("gx-maker-open")
     if (this._onPinScroll) window.removeEventListener("scroll", this._onPinScroll, { capture: true })
+    this._touchHost?.removeEventListener("touchmove", this._touchGuard)
+    if (this._onOutsideClick) document.removeEventListener("click", this._onOutsideClick)
   },
   methods: {
     previewShift(id) {
@@ -635,7 +841,35 @@ export const OnroadLayoutPage = {
     },
     selectWidget(id) {
       this.state.selected = id
+      this.state.touchArmed = id
+      this.openEditPanel()
+    },
+    // Tapping empty preview space or anywhere outside the editor lets go of the selected widget.
+    deselectWidget() {
+      if (this.state.drag || this.state.layerDrag || (this.state.selected == null && this.state.touchArmed == null)) return
+      this.finishColorEdit()
+      this.state.selected = null
+      this.state.touchArmed = null
+    },
+    previewClick(event) {
+      if (!event.target?.closest?.(".gx-layout__widget")) this.deselectWidget()
+    },
+    openEditPanel() {
+      if (this.state.selected == null) this.state.selected = this.activeWidgets?.[0]?.id || this.widgets?.[0]?.id || null
       this.state.inspectorPanel = "edit"
+      this.revealEditPanel()
+    },
+    // On narrow screens the edit controls always open with their top just under the pinned tabs.
+    revealEditPanel() {
+      if (typeof window === "undefined") return
+      const align = () => {
+        if (this.state.inspectorPanel !== "edit") return
+        const tabs = this.$refs.sections, panel = this.$refs.editPanel
+        if (!tabs || !panel || getComputedStyle(tabs).position !== "sticky") return
+        const gap = panel.getBoundingClientRect().top - tabs.getBoundingClientRect().bottom - 8
+        if (Math.abs(gap) >= 1) window.scrollBy(0, gap)
+      }
+      this.$nextTick(() => { align(); setTimeout(align, 220) })
     },
     toggleColor(key) {
       this.finishColorEdit()
@@ -670,6 +904,7 @@ export const OnroadLayoutPage = {
     },
     // Narrow screens pin the save bar and preview; the editor tabs stick just below their measured height.
     observePinned() {
+      this.guardPreviewTouch()
       if (typeof ResizeObserver === "undefined" || !this.$el?.style) return
       this._pinObserver ||= new ResizeObserver(() => {
         for (const [name, ref] of [["--layout-bar-h", "leaveBar"], ["--layout-pin-h", "pinned"]])
@@ -678,6 +913,8 @@ export const OnroadLayoutPage = {
       // Page-colored fills only appear while a piece is actually pinned, so they never show over the backdrop otherwise.
       if (!this._onPinScroll) {
         this._onPinScroll = () => {
+          const y = window.scrollY
+          if (y > 24 !== this.state.shrunk && (y > 24 || y < 8)) this.state.shrunk = y > 24
           for (const ref of ["leaveBar", "pinned", "sections"]) {
             const element = this.$refs[ref], style = element && getComputedStyle(element)
             const stuck = style?.position === "sticky" && element.getBoundingClientRect().top <= (parseFloat(style.top) || 0) + 1
@@ -696,22 +933,68 @@ export const OnroadLayoutPage = {
         }
       }
     },
+    // Once a drag owns the finger, the page must not scroll under it.
+    guardPreviewTouch() {
+      const preview = this.$refs.preview
+      if (preview === this._touchHost) return
+      this._touchGuard ||= (event) => { if (this.state.drag?.touch && event.cancelable) event.preventDefault() }
+      this._touchHost?.removeEventListener("touchmove", this._touchGuard)
+      preview?.addEventListener?.("touchmove", this._touchGuard, { passive: false })
+      this._touchHost = preview
+    },
+    clearPendingTouch() {
+      if (this._pendingTouch) clearTimeout(this._pendingTouch.timer)
+      this._pendingTouch = null
+    },
+    promotePendingTouch() {
+      const pending = this._pendingTouch
+      if (!pending) return
+      this._pendingTouch = null
+      this.state.touchArmed = pending.id
+      try { navigator.vibrate?.(10) } catch { }
+      this.startDrag(pending.id, { ...pending, button: 0, preventDefault() { } })
+    },
+    cameraLocked(id) { return this.lockedCameraIds.includes(id) },
+    layerFixed(id) { return this.profile.widgets[id]?.frontmost || this.cameraLocked(id) },
+    // Keeps the locked cameras directly under the frontmost controls, in their current relative order.
+    pinLockedCameras(order, locked) {
+      const front = order.filter(id => this.profile.widgets[id]?.frontmost)
+      return [...order.filter(id => !front.includes(id) && !locked.includes(id)), ...order.filter(id => locked.includes(id)), ...front]
+    },
+    toggleCameraLock(id) {
+      if (!this.editable || this.state.drag || this.state.layerDrag || !this.cameraIds.includes(id)) return
+      if (this.cameraLocked(id)) { this.state.pipUnlockConfirm = id; return }
+      const locked = [...this.lockedCameraIds, id]
+      this.state.pipUnlocked = { ...this.state.pipUnlocked, [id]: false }
+      const order = orderedWidgetIds(this.state.draft, this.state.data.metadata, this.state.profile)
+      const pinned = this.pinLockedCameras(order, locked)
+      if (pinned.every((key, index) => key === order[index])) return
+      const before = clone(this.state.draft)
+      this.state.draft.widgetOrder ||= {}
+      this.state.draft.widgetOrder[this.state.profile] = pinned
+      this.recordChange(before)
+    },
+    cancelCameraUnlock() { this.state.pipUnlockConfirm = null },
+    confirmCameraUnlock() {
+      const id = this.state.pipUnlockConfirm
+      this.state.pipUnlockConfirm = null
+      if (id) this.state.pipUnlocked = { ...this.state.pipUnlocked, [id]: true }
+    },
     reorderLayer(id, target) {
-      if (!this.editable || this.state.drag || id === target ||
-        this.profile.widgets[id]?.frontmost || this.profile.widgets[target]?.frontmost) return
+      if (!this.editable || this.state.drag || id === target || this.layerFixed(id) || this.layerFixed(target)) return
       const order = [...orderedWidgetIds(this.state.draft, this.state.data.metadata, this.state.profile)]
       const from = order.indexOf(id), to = order.indexOf(target)
       if (from < 0 || to < 0) return
-      const before = clone(this.state.draft)
+      const before = clone(this.state.draft), locked = this.lockedCameraIds
       order.splice(from, 1)
       order.splice(to, 0, id)
       this.state.draft.widgetOrder ||= {}
-      this.state.draft.widgetOrder[this.state.profile] = order
+      this.state.draft.widgetOrder[this.state.profile] = this.pinLockedCameras(order, locked)
       this.state.selected = id
       this.recordChange(before)
     },
     startLayerDrag(event, id) {
-      if (!this.editable || this.state.drag || this.state.layerDrag || event.button !== 0 || this.profile.widgets[id]?.frontmost) return
+      if (!this.editable || this.state.drag || this.state.layerDrag || event.button !== 0 || this.layerFixed(id)) return
       this._suppressLayerClick = false
       event.preventDefault()
       event.currentTarget.setPointerCapture(event.pointerId)
@@ -720,7 +1003,7 @@ export const OnroadLayoutPage = {
       this.state.layerDrag = {
         id, pointerId: event.pointerId, target: null, startX: event.clientX, startY: event.clientY,
         x: rect.x, y: rect.y, width: rect.width, offsetX: event.clientX - rect.x, offsetY: event.clientY - rect.y,
-        rows: this.layerWidgets.map(widget => widget.id), before: clone(this.state.draft), moved: false
+        rows: this.layerWidgets.map(widget => widget.id), before: clone(this.state.draft), locked: [...this.lockedCameraIds], moved: false
       }
       this._layerTarget = event.currentTarget
       this.watchRelease()
@@ -761,7 +1044,7 @@ export const OnroadLayoutPage = {
       const tabs = this.$el?.querySelector?.(".gx-layout__sections")?.getBoundingClientRect()
       const row = document.elementFromPoint(clientX, tabs ? Math.max(clientY, tabs.bottom + 6) : clientY)?.closest('[data-layer-id]')
       const target = row?.dataset.layerId
-      if (target && target !== drag.target && !this.profile.widgets[target]?.frontmost) {
+      if (target && target !== drag.target && !this.layerFixed(target)) {
         drag.target = target
         const order = [...orderedWidgetIds(drag.before, this.state.data.metadata, this.state.profile)]
         const from = order.indexOf(drag.id), to = order.indexOf(target)
@@ -769,7 +1052,7 @@ export const OnroadLayoutPage = {
         order.splice(from, 1)
         order.splice(to, 0, drag.id)
         this.state.draft.widgetOrder ||= {}
-        this.state.draft.widgetOrder[this.state.profile] = order
+        this.state.draft.widgetOrder[this.state.profile] = this.pinLockedCameras(order, drag.locked || [])
       }
     },
     // Scrolls while a dragged row is held near the visible edges; the top edge is the bottom of the pinned tabs.
@@ -860,6 +1143,8 @@ export const OnroadLayoutPage = {
       this.state.snapGuides = []
       this.finishColorEdit()
       this.state.profile = profile
+      this.state.pipUnlocked = {}
+      this.state.touchArmed = null
       this.state.selected = Object.keys(this.profile.widgets)[0] || null
       this.state.placementError = ""
       if (!this.availableScenes.some(scene => scene.id === this.state.scene)) this.state.scene = "general"
@@ -872,7 +1157,7 @@ export const OnroadLayoutPage = {
         Object.assign(this.layout[id], position)
         if (before) this.recordChange(before)
         this.state.placementError = ""
-      } else this.state.placementError = "Keep widgets within the screen and clear of Speed limit actions. The last valid position is kept."
+      } else this.state.placementError = "Speed-limit confirmation overlaps set speed, torque, or screen bounds"
       this.state.notice = ""
     },
     add(id) {
@@ -948,24 +1233,11 @@ export const OnroadLayoutPage = {
     setSpeedSources(key, value) {
       if (!this.editable || this.state.drag || this.state.layerDrag || this.selectedWidget?.kind !== "cruise_limits" ||
         !["speedSources", "speedSourcesCard"].includes(key)) return
-      const before = clone(this.state.draft), oldHeight = this.profile.widgets.cruise_limits.height
-      const widgets = this.state.data.metadata.profiles[this.state.profile].widgets
-      const dx = widgets.speed_limit_actions.default.x - widgets.cruise_limits.default.x
-      const gap = widgets.speed_limit_actions.default.y - widgets.cruise_limits.default.y - widgets.cruise_limits.height
-      const sourceGap = widgets.cruise_limits.sourcesExtent?.actionGap ?? gap
-      const oldGap = this.state.draft.speedSources === true ? sourceGap : gap
+      const before = clone(this.state.draft)
       this.state.draft[key] = value === true
-      const card = this.layout.cruise_limits, actions = this.layout.speed_limit_actions, height = this.profile.widgets.cruise_limits.height
-      // Actions that sat right under the card follow its new bottom; both stay on screen.
-      if (actions && actions.x === card.x + dx && actions.y === card.y + oldHeight + oldGap) {
-        const nextGap = this.state.draft.speedSources === true ? sourceGap : gap
-        card.y = Math.min(card.y, placementLimits(this.limitProfile, "speed_limit_actions", this.layout).maxY - height - nextGap)
-        actions.y = card.y + height + nextGap
-      }
-      for (const id of ["cruise_limits", "speed_limit_actions"].filter(id => this.layout[id])) {
-        const limits = placementLimits(this.limitProfile, id, this.layout)
-        this.layout[id].y = Math.max(limits.minY, Math.min(this.layout[id].y, limits.maxY))
-      }
+      // The card grows with its sources; keep it on screen.
+      const card = this.layout.cruise_limits, limits = placementLimits(this.limitProfile, "cruise_limits", this.layout)
+      card.y = Math.max(limits.minY, Math.min(card.y, limits.maxY))
       this.recordChange(before)
       this.state.notice = ""
     },
@@ -1035,7 +1307,7 @@ export const OnroadLayoutPage = {
         this.state.placementError = ""
       } else {
         Object.assign(position, before.layouts[this.state.profile][this.state.selected])
-        this.state.placementError = "That size would cover Speed limit actions. The last valid size is kept."
+        this.state.placementError = "Invalid widget size"
       }
       event.target.value = position.size
     },
@@ -1052,6 +1324,14 @@ export const OnroadLayoutPage = {
     startDrag(id, event, fromTray = false) {
       if (!this.editable || event.button > 0 || this.state.drag || !Object.hasOwn(this.profile.widgets, id)) return
       if (fromTray && this.profile.widgets[id].available === false) return
+      // Unarmed widgets need a tap or hold before dragging.
+      if (event.pointerType === "touch" && !fromTray && this.state.touchArmed !== id) {
+        this.clearPendingTouch()
+        this._pendingTouch = { id, pointerId: event.pointerId, pointerType: "touch", clientX: event.clientX, clientY: event.clientY }
+        this._pendingTouch.timer = setTimeout(() => this.promotePendingTouch(), HOLD_MS)
+        try { this.$refs.preview?.setPointerCapture?.(event.pointerId) } catch { }
+        return
+      }
       if (fromTray && this.sceneHidden(id)) this.state.scene = "general"
       const point = previewPoint(event, this.$refs.preview.getBoundingClientRect(), this.profile)
       if (!point) return
@@ -1117,7 +1397,7 @@ export const OnroadLayoutPage = {
       } else {
         position.size = previous
         event.target.value = previous
-        this.state.placementError = "That size would cover Speed limit actions. The last valid size is kept."
+        this.state.placementError = "Invalid widget size"
       }
     },
     boxInput(axis, event) {
@@ -1125,6 +1405,17 @@ export const OnroadLayoutPage = {
       if (Number.isFinite(number)) this.resizeBox(this.state.selected, axis === "width" ? number : this.selectedPosition.width,
         axis === "height" ? number : this.selectedPosition.height)
       event.target.value = this.selectedPosition[axis]
+    },
+    scaleInput(event) {
+      const value = Number(event.target.value), range = this.selectedWidget?.scale
+      if (!this.editable || this.state.drag || this.state.layerDrag || !range || !Number.isInteger(value) || value < range.min || value > range.max) return
+      const before = clone(this.state.draft)
+      this.selectedPosition.scale = value
+      // Growing back toward full size may overhang the screen edge; pull it back in.
+      Object.assign(this.selectedPosition, clampPlacement(this.limitProfile, this.state.selected,
+        this.selectedPosition.x, this.selectedPosition.y, this.layout))
+      this.recordChange(before, this.state.profile + ":" + this.state.selected + ":scale")
+      this.state.notice = ""
     },
     opacityInput(event) {
       const value = Number(event.target.value), range = this.selectedWidget?.opacity
@@ -1141,6 +1432,17 @@ export const OnroadLayoutPage = {
       this.recordChange(before)
       this.state.notice = ""
     },
+    setWidgetSize(size) {
+      if (!this.editable || this.state.drag || this.state.layerDrag || !this.selectedWidget?.sizes ||
+        !Object.hasOwn(this.selectedWidget.sizes, size)) return
+      this.finishColorEdit()
+      const before = clone(this.state.draft)
+      this.selectedPosition.size = size
+      Object.assign(this.selectedPosition, clampPlacement(this.limitProfile, this.state.selected,
+        this.selectedPosition.x, this.selectedPosition.y, this.layout))
+      this.recordChange(before)
+      this.state.notice = ""
+    },
     setWidgetCollapse(value) {
       if (!this.editable || this.state.drag || this.state.layerDrag || !this.selectedWidget?.collapseToggle) return
       this.finishColorEdit()
@@ -1149,7 +1451,23 @@ export const OnroadLayoutPage = {
       this.recordChange(before)
       this.state.notice = ""
     },
+    setWidgetToggle(field, value) {
+      const flag = { bluetooth: 'bluetoothToggle', wifiName: 'wifiNameHeight' }[field]
+      if (!this.editable || this.state.drag || this.state.layerDrag || !flag || !this.selectedWidget?.[flag]) return
+      this.finishColorEdit()
+      const before = clone(this.state.draft)
+      this.selectedPosition[field] = value === 'On'
+      Object.assign(this.selectedPosition, clampPlacement(this.limitProfile, this.state.selected,
+        this.selectedPosition.x, this.selectedPosition.y, this.layout))
+      this.recordChange(before)
+      this.state.notice = ""
+    },
     moveDrag(event) {
+      const pending = this._pendingTouch
+      if (pending?.pointerId === event.pointerId) {
+        if (Math.hypot(event.clientX - pending.clientX, event.clientY - pending.clientY) >= DRAG_SLOP) this.clearPendingTouch()
+        return
+      }
       const drag = this.state.drag
       if (!drag || drag.pointerId !== event.pointerId) return
       const rect = this.$refs.preview.getBoundingClientRect(), point = previewPoint(event, rect, this.profile)
@@ -1172,6 +1490,8 @@ export const OnroadLayoutPage = {
       // A finger wobbles a few pixels on every tap; only a deliberate move drags the widget.
       if (!drag.moved && Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) < DRAG_SLOP) return
       drag.moved = true
+      drag.clientX = event.clientX
+      drag.clientY = event.clientY
       drag.inside = point.x >= 0 && point.y >= 0 && point.x <= this.profile.width && point.y <= this.profile.height
       if (!drag.fromTray || drag.inside) {
         const raw = { x: point.x - drag.offsetX, y: point.y - drag.offsetY }
@@ -1195,16 +1515,26 @@ export const OnroadLayoutPage = {
       if (drag.fromTray) this.layout[drag.id].enabled = drag.inside
     },
     endDrag(event) {
+      if (this._pendingTouch?.pointerId === event.pointerId) {
+        const { id } = this._pendingTouch
+        this.clearPendingTouch()
+        this.state.touchArmed = id
+        this.state.selected = id
+        this.finishColorEdit()
+        this.openEditPanel()
+        return
+      }
       const drag = this.state.drag
       if (!drag || drag.pointerId !== event.pointerId) return
       this.moveDrag(event)
       if (drag.fromTray && !drag.inside) Object.assign(this.layout[drag.id], drag.before)
       const before = drag.historyBefore, position = this.layout[drag.id]
-      if (!drag.fromTray && !drag.resize && !drag.moved) this.state.inspectorPanel = "edit"
+      if (!drag.fromTray && !drag.resize && !drag.moved) this.openEditPanel()
       this.releaseDrag()
       this.recordChange(before)
     },
     releaseDrag() {
+      this.clearPendingTouch()
       const id = this.state.drag?.pointerId
       this.state.snapGuides = []
       this.state.drag = null

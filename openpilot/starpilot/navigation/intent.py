@@ -6,9 +6,11 @@ from openpilot.cereal import log
 from openpilot.common.constants import CV
 
 from openpilot.starpilot.navigation.wire import navigation_state
+from openpilot.starpilot.lateral.signal_turn import SignalTurnEvidence
 
 SERVICE = 'starpilotNavigation'
 MAX_AGE_NS = 2_500_000_000
+NAVIGATION_BRAKE_MAGNITUDE = 1.0
 TARGET_MPH = {'uturn': 5., 'sharpLeft': 10., 'sharpRight': 10., 'left': 14., 'right': 14.}
 
 
@@ -64,7 +66,9 @@ def turn_speed(maneuver, min_steer_speed: float) -> float | None:
   if target is None or not math.isfinite(maneuver.distanceMeters) or maneuver.distanceMeters < 0:
     return None
   target = max(target * CV.MPH_TO_MS, min_steer_speed)
-  return math.sqrt(target * target + 2 * .45 * max(0., maneuver.distanceMeters - 8.))
+  ordinary = kind == 'turn' and modifier in ('left', 'right')
+  approach_decel, settling_distance = (.75, 20.) if ordinary else (.45, 8.)
+  return math.sqrt(target * target + 2 * approach_decel * max(0., maneuver.distanceMeters - settling_distance))
 
 
 def cruise_ceiling(sm, CP, now_ns: int, cruise_mps: float) -> float | None:
@@ -103,7 +107,9 @@ class TurnIntent:
     from openpilot.starpilot.lateral.lane_change_preferences import LiveLaneChangePolicy
     self.guidance = LiveLaneChangePolicy(params) if params is not None else None
     self.steering_capable = steering_capable(cp)
+    self.signal_model = SignalTurnEvidence()
     self.signal_stop_hold = False
+    self.signal_stop_completed = False
     self.key = None
     self.stop_hold = False
 
@@ -141,15 +147,12 @@ class TurnIntent:
       signaling = bool(cs.leftBlinker or cs.rightBlinker)
       policy = self.guidance.sample(now_ns, signaling=signaling,
                                     maneuver_active=current_desire != log.Desire.none)
-      if not signaling or cs.standstill:
-        self.signal_stop_hold = False
-      if model_stop or plan.shouldStop:
-        self.signal_stop_hold = True
       if (not supported or not self.steering_capable or not policy.turn_signal_guidance or
-          current_desire != log.Desire.none or self.signal_stop_hold or not cc.latActive or
-          not cs.canValid or cs.canTimeout or str(cs.gearShifter) != 'drive' or cs.standstill or
-          not math.isfinite(cs.vEgo) or not 0.1 < cs.vEgo < 20 * CV.MPH_TO_MS or
-          cs.leftBlinker == cs.rightBlinker or not device.started):
+          current_desire != log.Desire.none or not cc.latActive or
+          not cs.canValid or cs.canTimeout or str(cs.gearShifter) != 'drive' or
+          not math.isfinite(cs.vEgo) or (cs.vEgo >= 20 * CV.MPH_TO_MS and
+            (cs.steeringPressed or not self.signal_model.current(sm, now_ns))) or
+          not device.started):
         return current_desire
       for service, age in (('carState', 100_000_000), ('carControl', 100_000_000),
                            ('longitudinalPlan', 150_000_000), ('deviceState', 2_000_000_000)):
@@ -158,6 +161,18 @@ class TurnIntent:
             not 0 < device.startedMonoTime <= stamp <= now_ns <= stamp + age):
           return current_desire
       if not device.startedMonoTime <= plan.modelMonoTime <= sm.logMonoTime['longitudinalPlan']:
+        return current_desire
+      if not signaling:
+        self.signal_stop_hold = self.signal_stop_completed = False
+      elif cs.standstill:
+        self.signal_stop_hold = False
+        self.signal_stop_completed = True
+      elif model_stop or plan.shouldStop:
+        self.signal_stop_hold = True
+      elif self.signal_stop_completed:
+        # A completed stop may release after its final planner sample clears.
+        self.signal_stop_hold = self.signal_stop_completed = False
+      if self.signal_stop_hold or cs.standstill or cs.vEgo <= 0.1 or cs.leftBlinker == cs.rightBlinker:
         return current_desire
       if cs.leftBlinker and not cs.leftBlindspot:
         return log.Desire.turnLeft

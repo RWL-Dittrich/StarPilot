@@ -52,10 +52,10 @@ class AppearanceSettingsTests(unittest.TestCase):
   def test_absent_defaults_are_read_only_and_match_both_views(self):
     self.assertEqual(onroad_appearance(self.params), OnroadAppearance())
     self.assertEqual(tuple(row.key for row in self.owner.snapshot(Profile.LARGE).rows),
-                     ("DeveloperSidebar", "HidePersonalityAlerts", "ShowBrakeStatus", "BlindSpotMetrics", "SignalMetrics", "ReduceMotion"))
+                     ("DeveloperSidebar", "HidePersonalityAlerts", "ShowBrakeStatus", "BlindSpotMetrics", "SignalMetrics", "TurnByTurn:large", "ReduceMotion"))
     self.assertEqual(tuple(row.key for row in self.owner.snapshot(Profile.COMPACT).rows),
                      ("CameraView", "DriverCamera", "StockConfidenceBallWidget", "HidePersonalityAlerts", "ShowBrakeStatus",
-                      "HideLeadMarker", "LeadInfo", "SignalMetrics", "BlindSpotMetrics"))
+                      "HideLeadMarker", "LeadInfo", "SignalMetrics", "BlindSpotMetrics", "TurnByTurn:compact"))
     # Widget visibility, the stopped timer and Rainbow Road moved into the onroad layout.
     for profile in Profile:
       self.assertFalse(set(RETIRED_DISPLAY_KEYS) & {row.key for row in self.owner.snapshot(profile).rows})
@@ -308,7 +308,7 @@ class AppearanceSettingsTests(unittest.TestCase):
     def initialize_defaults():
       with patch.object(manager, "Params", return_value=self.params), \
            patch.object(manager, "prepare_manager_start"), patch.object(manager, "starpilot_storage_root", return_value=self.storage), \
-           patch.object(manager, "save_bootlog"), \
+           patch.object(manager, "save_bootlog"), patch.object(manager, "clear_bookmark_checkpoint"), \
            patch.object(manager, "get_build_metadata", return_value=NS(release_channel=False)), \
            patch.object(manager.Paths, "shm_path", side_effect=AfterDefaults):
         with self.assertRaises(AfterDefaults):
@@ -328,6 +328,7 @@ class AppearanceSettingsTests(unittest.TestCase):
   def test_stock_confidence_rail_requires_fresh_source_and_road_camera(self):
     from openpilot.starpilot.ui.appearance_preferences import CameraViewChoice
     view = onroad.OnroadView.__new__(onroad.OnroadView)
+    view._fade = Mock()
     view.personality = Mock()
     view.navigation = Mock()
     view.background_layer = None
@@ -573,6 +574,9 @@ class AppearanceSettingsTests(unittest.TestCase):
          patch.object(appearance_compact, "NavScroller", Scroller), patch.object(appearance_compact.gui_app, "push_widget", shown.append):
       appearance_compact.AppearanceCompact(Session()).entry_button().click()
       page = shown[0]
+      self.assertEqual(next(item for item in page.items if item.label == "turn-by-turn").value, "on")
+      next(item for item in page.items if item.label == "turn-by-turn").click()
+      self.assertEqual(next(item for item in page.items if item.label == "turn-by-turn").value, "off")
       self.assertEqual(page.items[0].label, "visuals")
       next(item for item in page.items if item.label == "hide personality alerts").click()
       self.assertTrue(read_visibility(self.params, "HidePersonalityAlerts").value)
@@ -625,9 +629,10 @@ class AppearanceSettingsTests(unittest.TestCase):
       from openpilot.starpilot.ui.tests.test_unified_speed_native import foreground_calls
       x, y = foreground_calls(fonts.draw)[0].args[3:5]
       self.assertAlmostEqual(x, 175)
-      self.assertAlmostEqual(y, 86.07, places=2)
+      self.assertAlmostEqual(y, 125.55, places=2)  # SET centers on the sign beside it
     for profile in (Profile.LARGE, Profile.COMPACT):
       view = onroad.OnroadView.__new__(onroad.OnroadView)
+      view._fade = Mock()
       view.personality = Mock()
       view.navigation = Mock()
       view.background_layer = None
@@ -665,7 +670,7 @@ class AppearanceSettingsTests(unittest.TestCase):
         view.alert.render.assert_called()
         if profile == Profile.LARGE:
           self.assertEqual(view.unified_speed.render.call_count, 2)
-          self.assertEqual(slc.call_count, 2)
+          slc.assert_not_called()  # No pending limit: feedback draws with the card, not the chooser.
           view.current_speed.render.assert_called_once()
           view.steering_wheel.render.assert_called_once()
         for alert_size in (AlertSize.SMALL, AlertSize.MID, AlertSize.FULL):
@@ -684,3 +689,41 @@ class AppearanceSettingsTests(unittest.TestCase):
 
 if __name__ == "__main__":
   unittest.main()
+
+
+def test_native_turn_card_switch_uses_layout_and_keeps_other_screen_independent(tmp_path):
+  import copy
+  from openpilot.starpilot.ui.onroad_customization import PARAM_KEY
+  params = Params(str(tmp_path))
+  parked = [True]
+  owner = AppearanceOwner(params, lambda: parked[0])
+  for profile in Profile:
+    before = default_document() if params.get(PARAM_KEY) is None else params.get(PARAM_KEY)
+    row = next(row for row in owner.snapshot(profile).rows if row.key == f'TurnByTurn:{profile}')
+    request = row_change(row)
+    assert request is not None
+    parked[0] = False
+    assert not owner.apply(request)
+    parked[0] = True
+    assert owner.apply(request)
+    assert not owner.apply(request), 'stale native edits must not overwrite Galaxy edits'
+    expected = copy.deepcopy(before)
+    expected['layouts'][str(profile)]['nav_card']['enabled'] = False
+    assert params.get(PARAM_KEY) == expected
+    assert next(row for row in owner.snapshot(profile).rows if row.key == request.key).value == 'Off'
+
+
+def test_native_navigation_hidden_does_not_hide_starport():
+  from openpilot.starpilot.system.starport.projection_layout import default_layout_for_viewport, projection_customization
+  native = default_document()
+  for profile in Profile:
+    native['layouts'][str(profile)]['nav_card']['enabled'] = False
+  projection = default_layout_for_viewport((1920, 1080))
+  combined = projection_customization(projection, native)
+  assert combined['layouts']['large']['nav_card']['enabled'] is True
+  assert all(native['layouts'][str(profile)]['nav_card']['enabled'] is False for profile in Profile)
+
+
+def test_galaxy_uses_widget_editor_instead_of_duplicate_native_switch(tmp_path):
+  owner = AppearanceOwner(Params(str(tmp_path)), lambda: True)
+  assert not any(row.key.startswith('TurnByTurn:') for row in owner.snapshot(Profile.COMPACT, include_large=True).rows)

@@ -128,7 +128,7 @@ def action_from_outputs(outputs: dict[str, np.ndarray], version: str, previous: 
     raise ValueError("invalid catalog model action contract")
   if version in ("v14", "v15", "v16"):
     curvature, acceleration = outputs["action"][0]
-    curvature = curvature / (100.0 if version == "v14" else max(1.0, v_ego) ** 2)
+    curvature = curvature / (100.0 if version == "v14" else max(2.5, v_ego) ** 2)
     stop = v_ego < 0.3 and acceleration < 0.1
   else:
     plan = outputs["plan"][0]
@@ -208,7 +208,11 @@ class CatalogModelState:
   def move_warp_output(self, coherent_warp: Callable[[Any], None]) -> None:
     """On a comma, move this warp's output to memory the CPU reads cached with `coherent_warp` (Jetlink's
     make_coherent), for the link to send from. Before warmup(), whose first call links the warp to its address."""
-    buffer = self.warp_enqueue.captured.ret.uop.base.buffer
+    output = getattr(getattr(self.warp_enqueue, "captured", None), "ret", None)
+    if not isinstance(output, Tensor):
+      self.warp_copied = "warp has no captured Tensor output"
+      return
+    buffer = output.uop.base.buffer
     if not buffer.device.startswith("QCOM"):
       self.warp_copied = f"a {buffer.device} buffer"
       return
@@ -220,6 +224,8 @@ class CatalogModelState:
     self.warp_copied = None
 
   def _reset_state(self) -> None:
+    for replay in getattr(self, "_laboratory_replays", ()):
+      replay.clear()
     from openpilot.starpilot.models.compile import make_stateful_input_queues, make_supercombo_input_queues, make_split_input_queues
 
     if self.onnx_history:

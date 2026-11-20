@@ -279,6 +279,8 @@ struct StarPilotLongitudinalPlan @0xda96579883444c35 {
   forceStopHolding @4 :Bool;
   forceStopBraking @5 :Bool;
   forceStopEpisodeMonoTime @6 :UInt64;
+  departureAlertKind @7 :UInt8; # 0: none, 1: green-light advisory, 2: lead departing
+  departureAlertMonoTime @8 :UInt64; # Original advisory model-source timestamp, ns
 }
 
 struct SlcState @0xa1680744031fdb2d {
@@ -330,7 +332,7 @@ struct SlcState @0xa1680744031fdb2d {
   pendingSource @36 :Text;
   effectiveClusterTarget @37 :Float32; # m/s in the selected-cruise cluster coordinate
   hasEffectiveClusterTarget @38 :Bool;
-  isLimitingMaxSet @39 :Bool; # qualified raw ceiling below selected raw cruise
+  isLimitingMaxSet @39 :Bool; # adjusted limit at or below SET, in displayed units
   driverOverrideActive @40 :Bool;
   # Presentation only. Qualified source observations from this publisher cycle;
   # consumers use the outer session and frame freshness, never these rows for control.
@@ -441,6 +443,8 @@ struct SlcState @0xa1680744031fdb2d {
     status @13 :Text;
     reason @14 :Text;
     statusCode @15 :UInt16;
+    # Informational CEM stop scene, not a mode request or braking authority.
+    perceivedStop @16 :Bool;
 
     enum Choice {
       stock @0;
@@ -883,6 +887,16 @@ struct StarPilotLateralState @0xc2243c65e0340384 {
   learningApplication @10 :LearningApplication;
   feedbackConsumption @11 :FeedbackConsumption;
   trackingApplication @12 :LiveTrackingApplication;
+  torqueTuning @13 :TorqueTuning;
+
+  struct TorqueTuning {
+    version @0 :UInt16;
+    factor @1 :Float64;
+    friction @2 :Float64;
+    manualFactor @3 :Bool;
+    manualFriction @4 :Bool;
+    learned @5 :Bool;
+  }
 
   struct LaneCentering {
     version @0 :UInt16;

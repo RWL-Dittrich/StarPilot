@@ -49,26 +49,46 @@ class SpeedLimitShapes:
       if image.data is not None:
         rl.unload_image(image)
 
-  def _draw(self, name, x, y, color, rotation=0, *, scale=None):
+  def _draw(self, name, x, y, color, rotation=0, *, scale=None, width_scale=1):
     self._load()
     source = self.sources[name]
     origin = self.origins[name] if scale is None else rl.Vector2(source.width * scale / SPRITE_DENSITIES.get(name, 1) / 2,
                                                                source.height * scale / SPRITE_DENSITIES.get(name, 1) / 2)
     scale = (self.scale if scale is None else scale) / SPRITE_DENSITIES.get(name, 1)
-    rl.draw_texture_pro(self.texture, source, rl.Rectangle(x, y, source.width * scale, source.height * scale),
+    if width_scale != 1:
+      origin = rl.Vector2(origin.x * width_scale, origin.y)
+    rl.draw_texture_pro(self.texture, source, rl.Rectangle(x, y, source.width * scale * width_scale, source.height * scale),
                         origin, rotation, color)
 
-  def circle(self, x, y, color):
-    self._outlined('ring', x, y, color)
+  def circle(self, x, y, color, *, scale=None):
+    self._outlined('ring', x, y, color, scale=scale)
 
-  def _outlined(self, name, x, y, color, *, scale=None):
+  def _outlined(self, name, x, y, color, *, scale=None, width_scale=1):
     radius = self.scale if scale is None else scale
     for dx, dy in ((-radius, 0), (radius, 0), (0, -radius), (0, radius)):
-      self._draw(name, x + dx, y + dy, rl.Color(6, 14, 10, 230), scale=scale)
-    self._draw(name, x, y, color, scale=scale)
+      self._draw(name, x + dx, y + dy, rl.Color(6, 14, 10, 230), scale=scale, width_scale=width_scale)
+    self._draw(name, x, y, color, scale=scale, width_scale=width_scale)
 
-  def outline(self, x, y, color, *, scale=None):
-    self._outlined('outline', x, y, color, scale=scale)
+  def outline(self, x, y, color, *, scale=None, width_scale=1):
+    self._outlined('outline', x, y, color, scale=scale, width_scale=width_scale)
+
+  def thick_outline(self, x, y, color, *, scale=None, width_scale=1):
+    """The rectangular outline at about twice its stroke, for the limit being followed."""
+    radius = self.scale if scale is None else scale
+    for dx, dy in ((-2, 0), (2, 0), (0, -2), (0, 2)):
+      self._draw('outline', x + dx * radius, y + dy * radius, rl.Color(6, 14, 10, 230), scale=scale, width_scale=width_scale)
+    for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1), (0, 0)):
+      self._draw('outline', x + dx * radius, y + dy * radius, color, scale=scale, width_scale=width_scale)
+
+  def in_use_ring(self, x, y, color, *, scale=None):
+    """A highlight ring around the red Vienna ring, whose outer edge is at radius 59.
+
+    A see-through gap keeps the green apart from the red, so it reads as a highlight
+    around the sign rather than part of it, with the weight of the thick rectangular outline.
+    """
+    center, s = rl.Vector2(x, y), self.scale if scale is None else scale
+    rl.draw_ring(center, 61 * s, 67.5 * s, 0, 360, 96, rl.Color(6, 14, 10, 230))
+    rl.draw_ring(center, 62 * s, 66.5 * s, 0, 360, 96, color)
 
   def button(self, x, y, color, *, profile, scale, pressed=False):
     self._draw(f'button_{profile}' + ('_pressed' if pressed else ''), x, y, color, scale=scale)

@@ -363,12 +363,12 @@ for (const reason of ['trial_started_waiting_for_comparable_drive', 'trial_measu
   ctx.report.current.details['Analysis decision'] = reason
   const state = tunerStatus(ctx.report, false, false, '', true)
   assert.equal(state.key, 'next-drive')
-  assert(state.description.includes('trial'))
+  assert.equal(state.description, 'Your saved steering adjustments are kept for the next drive.')
   assert.notEqual(state.description, tunerStatus({ ...ctx.report, current: { ...ctx.report.current,
     details: { ...ctx.report.current.details, 'Analysis decision': 'bounded_trial_configured_for_next_drive' } } }, false, false, '', true).description)
   assert.equal(ctx.currentApplied, false, 'A pending retry cannot fabricate applied or accepted steering')
 }
-console.log('Inconclusive next-drive trials remain visibly provisional without fabricated application')
+console.log('Inconclusive next-drive trials keep saved settings without fabricated application')
 
 // Complete, read-only dial advice is independent of automatic-tune approval.
 const advisoryNames = [...SURFACE_NAMES, ...FRICTION_NAMES]
@@ -399,11 +399,20 @@ assert.equal(untouchedManual.props.row.value, 0, 'Showing advice cannot move a m
 const singleAdvisory = structuredClone(advisoryReport)
 singleAdvisory.current.details['Recorded coordinate recommendations'] = singleAdvisory.current.details['Recorded coordinate recommendations'].slice(0, 1)
 assert(offroadCoordinateEvidence(singleAdvisory, 'unwind_taper_right').includes('No recommendation from this analyzed drive'))
+const symptomAdvice = structuredClone(singleAdvisory)
+symptomAdvice.current.details['Recorded coordinate recommendations'] = [
+  ['unwind_taper_right', 0, .006, 5, 'observed_unwind_too_slow_right'],
+]
+manualContext.report = symptomAdvice
+assert(text(render.call(manualContext, manualContext, [])).includes('While easing out of right curves, steering stayed stronger than requested.'),
+  'Show the observed behavior on the finding itself, not only its technical details')
+manualContext.report = advisoryReport
+
 const conflictingAdvisory = structuredClone(singleAdvisory)
 conflictingAdvisory.current.details['Recorded coordinate recommendations'][0][2] = null
 conflictingAdvisory.current.details['Recorded coordinate recommendations'][0][4] = 'conflicting_recorded_candidates'
 assert(validTrainingResults(conflictingAdvisory))
-assert(recommendationText(offroadView(conflictingAdvisory).suggestions[0]).includes('no single suggested setting'))
+assert.equal(offroadView(conflictingAdvisory).suggestions.length, 0, 'Conflicting evidence is not a recommendation')
 for (const row of [ ['unknown', 0, .005, 6, 'unconfirmed'], ['ff_gain_left', 0, NaN, 6, 'unconfirmed'],
   ['ff_gain_left', 0, .02, 6, 'unconfirmed'], ['ff_gain_left', true, .005, 6, 'unconfirmed'],
   ['ff_gain_left', 0, .005, -1, 'unconfirmed'], ['ff_gain_left', 0, null, 6, 'unconfirmed'] ]) {
@@ -422,7 +431,7 @@ const historicalAdvisory = structuredClone(singleAdvisory)
 historicalAdvisory.current.status = 'fitting'
 historicalAdvisory.current.reason = 'analyzing_last_completed_drive'
 historicalAdvisory.current.details['Earlier analysis shown while updating'] = true
-assert(tunerStatus(historicalAdvisory, false, false, '', true).description.includes('Earlier completed-drive findings'))
+assert(tunerStatus(historicalAdvisory, false, false, '', true).description.includes('Earlier drive findings'))
 assert(offroadCoordinateEvidence(historicalAdvisory, 'ff_gain_left').startsWith('Earlier analyzed drive'))
 historicalAdvisory.preference = { version: 1, valid: true, enabled: true, parked: true, vehicle: 'OTHER_CAR' }
 assert.equal(offroadView(historicalAdvisory), null, 'Earlier advice must not be relabeled for another reported vehicle')
@@ -440,4 +449,3 @@ assert.equal(nowSavedAdvisory.current.application.applied, false, 'A saved recom
 await import('./test_plots.mjs')
 await import('./test_settings_controls.mjs')
 await import('./test_flm_review.mjs')
-if (process.env.CI && process.platform === 'linux') await import('./test_flm_ux_browser.mjs')

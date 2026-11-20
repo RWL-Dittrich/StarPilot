@@ -98,7 +98,7 @@ class TestOffroadCache(unittest.TestCase):
     for session in ('', 'e' * 31, 'z' * 32):
       with self.subTest(session=session), self.assertRaises(ValueError):
         self.cache.claim_trial('d' * 64, session)
-    with patch('openpilot.starpilot.flm.offroad_cache.MAX_FILES', 0), self.assertRaises(ValueError):
+    with patch('openpilot.starpilot.flm.offroad_cache.MAX_TOTAL', 0), self.assertRaises(ValueError):
       self.cache.claim_trial('e' * 64, 'f' * 32)
     self.cache.directory.chmod(0o777)
     with self.assertRaises(ValueError):
@@ -117,7 +117,8 @@ class TestOffroadCache(unittest.TestCase):
   def test_restart_withdraws_trial_and_accepted_rows_do_not_claim(self):
     row = {'state': 'ready_for_next_drive', 'values': values(0.01), 'analysis_sha256': self.cache.put(trial())}
     with (
-      patch('openpilot.starpilot.flm.offroad_worker._current_scope', return_value=scope()),
+      patch('openpilot.starpilot.flm.offroad_runtime.current_scope', return_value=scope()),
+      patch('openpilot.starpilot.saved_source.read_saved', return_value=(b'declared-present-row', True)),
       patch('openpilot.starpilot.flm.offroad_store.startup_row', return_value=(row, 'loaded')),
     ):
       first = from_configuration(None, None, self.cache.directory, vehicle_session='a' * 32)
@@ -211,16 +212,16 @@ class TestOffroadCache(unittest.TestCase):
     driving = SimpleNamespace(receipt=SimpleNamespace(cp_sha256='a' * 64), counts=dict(counts, active_lateral_request_rows=70), quality_stops=[])
     calls = []
 
-    def collect(root, route, *, permitted):
+    def collect(root, route, *, permitted, walker=None):
       self.assertTrue(permitted())
+      self.assertIsNone(walker, 'Use the default complete route reader')
       calls.append(route['routeId'])
       return parked if route is latest else driving
 
-    history = SimpleNamespace(snapshot=lambda: {'scanIncomplete': False, 'routes': [latest, earlier]})
     with (
       patch.object(module, 'latest_route', return_value=latest),
       patch.object(module, 'collect_route_inputs', new=collect),
-      patch('openpilot.starpilot.galaxy.drive_history.DriveHistory', return_value=history),
+      patch('openpilot.starpilot.flm.offroad_route.route_inventory', return_value={'scanIncomplete': False, 'routes': [latest, earlier]}),
     ):
       route, collected = module.collect_latest_steering_inputs(None, '.', permitted=lambda: True)
       self.assertIs(route, earlier)
@@ -255,10 +256,9 @@ class TestOffroadCache(unittest.TestCase):
 
     for intact in (True, False):
       with self.subTest(selected_source_intact=intact), tempfile.TemporaryDirectory() as directory:
-        history = SimpleNamespace(snapshot=lambda intact=intact: {'scanIncomplete': False, 'routes': [parked, selected] if intact else [parked]})
         with (
           patch.object(module, 'latest_route', return_value=parked),
-          patch('openpilot.starpilot.galaxy.drive_history.DriveHistory', return_value=history),
+          patch.object(module, 'route_inventory', return_value={'scanIncomplete': False, 'routes': [parked, selected] if intact else [parked]}),
         ):
           params = Params(directory)
           worker = module.OffroadWorker(
@@ -343,7 +343,7 @@ class TestOffroadSurface(unittest.TestCase):
     from opendbc.car.hyundai.values import CAR
     from openpilot.starpilot.flm import controller_replay
     from openpilot.starpilot.flm.controller_replay import SelectedControllerFactory, capture_snapshot, frame_input, final_command
-    from openpilot.starpilot.flm.offroad_controller_checks import check_candidate
+    from openpilot.starpilot.flm.offroad_controller_checks import check_candidate, check_original_native
     from openpilot.starpilot.flm.torque_adapter import Objective
     from openpilot.starpilot.flm.torque_observation import TorqueObservation
 
@@ -413,6 +413,25 @@ class TestOffroadSurface(unittest.TestCase):
     self.assertEqual(len(result['commands']), len(original))
     self.assertTrue(all(before == after for _, before, after in result['commands']))
     self.assertFalse(check_candidate(cp, original, values(), require_change=True)['qualified'])
+    # A few usable commands may be numerically checked, but cannot replace native history or an actual change.
+    for end_tick, expected_scored in ((4, 1), (24, 17), (59, 48)):
+      with self.subTest(end_tick=end_tick):
+        sparse = check_candidate(cp, original, values(), score_end_ns=original[end_tick].control_ns, require_change=False)
+        self.assertTrue(sparse['qualified'], sparse)
+        self.assertEqual(sparse['scored_frames'], expected_scored)
+        self.assertEqual(sparse['changed_frames'], 0)
+        self.assertEqual(sparse['verified_frames'], len(original))
+        self.assertFalse(check_candidate(cp, original, values(), score_end_ns=original[end_tick].control_ns)['qualified'])
+        commands = sparse['commands']
+        stamps = {stamp for stamp, _, _ in commands}
+        native_controls = tuple(control for control in original if control.control_ns in stamps)
+        if len(native_controls) < 50:
+          with self.assertRaisesRegex(ValueError, 'Complete bounded source controller/native history required'):
+            check_original_native(cp, native_controls, (), commands, require_change=False)
+        else:
+          native = check_original_native(cp, native_controls, (), commands, require_change=False)
+          self.assertFalse(native['qualified'])
+          self.assertEqual(native['reason'], 'insufficient_original_native_delivery')
     hinted = tuple(replace(row, limited=True) for row in original)
     no_delivery = check_candidate(cp, hinted, values(), require_change=False)
     self.assertFalse(no_delivery['qualified'])
@@ -1795,9 +1814,11 @@ class TestOffroadTrackingPolicy(unittest.TestCase):
       stable_windows={metadata_key: profile, other_key: wrong_map},
     )
     route = {'routeId': prior_id, 'segments': [{'files': {'rlog': True}} for _ in range(8)]}
-    assessment = SimpleNamespace(receipt=SimpleNamespace(route_id=current_id, cp_sha256='a' * 64, completed_wall_ns=10))
+    assessment = SimpleNamespace(receipt=SimpleNamespace(
+      route_id=current_id, cp_sha256='a' * 64, completed_wall_ns=10, segments=((current_id + '--0', 'c' * 64, 1),),
+    ))
     with (
-      patch.object(module.DriveHistory, 'snapshot', return_value={'scanIncomplete': False, 'routes': [route]}),
+      patch.object(module, 'route_inventory', return_value={'scanIncomplete': False, 'routes': [route]}),
       patch.object(module, 'collect_route_inputs', return_value=collected),
       patch.object(module, 'cohort', return_value='2:right:steady'),
     ):

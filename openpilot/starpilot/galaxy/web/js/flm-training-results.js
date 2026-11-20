@@ -35,6 +35,7 @@ const detailValue = (value, depth = 0) => value === null || typeof value === "bo
 export function validTrainingResults(value) {
   if (!value || value.version !== 1 || !Array.isArray(value.history) || value.history.length > 20) return false
   if (value.preference !== undefined && !validLearningPreference(value.preference)) return false
+  if (value.savedHistory !== undefined && !validSavedHistory(value.savedHistory)) return false
   if (!value.history.every(row => row && text(row.time, 80) && text(row.status, 64) && text(row.reason) && typeof row.applied === "boolean")) return false
   const row = value.current
   if (row === null) return true
@@ -54,7 +55,19 @@ export function validTrainingResults(value) {
           item.every(number => typeof number === 'number' && Number.isFinite(number) && Math.abs(number) <= .25) :
         key === 'GLOBAL source observation refusals' ? validSourceRefusals(item) :
         key === 'Recorded steering response' ? item === null || recordedSteeringView(item) !== null :
-        key === 'Recorded coordinate recommendations' ? validCoordinateRecommendations(item) : detailValue(item)))
+        key === 'Recorded coordinate recommendations' ? validCoordinateRecommendations(item) :
+        key === 'Recorded suggestion sources' ? validSuggestionSources(item) : detailValue(item)))
+}
+export function validSavedHistory(value) {
+  return keysAre(value, ['status', 'historicalOnly', 'profiles']) && ['readable', 'unavailable'].includes(value.status) &&
+    value.historicalOnly === true && Array.isArray(value.profiles) && value.profiles.length <= 8 &&
+    (value.status !== 'unavailable' || value.profiles.length === 0) && value.profiles.every(row =>
+      keysAre(row, ['completedAt', 'state', 'values']) && stamp(row.completedAt) &&
+      ['ready_for_next_drive', 'accepted', 'accepted_after_drive', 'retained_after_drive', 'rolled_back'].includes(row.state) &&
+      Array.isArray(row.values) && row.values.length > 0 && row.values.length <= 35 &&
+      new Set(row.values.map(pair => Array.isArray(pair) ? pair[0] : null)).size === row.values.length &&
+      row.values.every(pair => Array.isArray(pair) && pair.length === 2 && [...SURFACE_NAMES, ...FRICTION_NAMES].includes(pair[0]) &&
+        Number.isFinite(pair[1]) && pair[1] !== 0 && Math.abs(pair[1]) <= .25))
 }
 const labels = { collecting: "Gathering driving examples", unavailable: "Waiting for usable driving data",
   qualifiedFit: "Fit passed validation", qualified: "Fit passed validation", rejected: "Fit did not pass validation",
@@ -151,7 +164,7 @@ const frictionCoordinates = rows => Array.isArray(rows) && rows.length === 5 && 
   Number.isFinite(row[1]) && Math.abs(row[1]) <= .25) ? Object.fromEntries(rows) : null
 
 export function recommendationText(row, unit = null) {
-  if (row.target === null) return 'Conflicting recorded candidates; no single suggested setting'
+  if (row.target === null) return 'No consistent suggested value'
   if (row.target === undefined) return `change ${coordinateText(row.delta)}`
   // The setting owner displays every canonical coordinate as percent, including window edges.
   const suffix = unit ?? '%'
@@ -169,7 +182,7 @@ export function offroadCoordinateEvidence(report, name, live = false, unit = nul
   if (saved !== undefined && saved !== 0)
     statements.push(`Auto Learn saved: ${display(saved)}${route.configurationState === 'ready_for_next_drive' ? ' for the next drive' : ''}.`)
   for (const suggestion of route?.suggestions || []) if (suggestion.parameter === name)
-    statements.push(`${route.retained ? 'Earlier analyzed drive' : 'Previous-drive recommendation'}: ${recommendationText(suggestion, unit)}; not saved.${suggestion.reason ? ` ${learningReason(suggestion.reason)}` : ''}`)
+    statements.push(`${route.retained || route.earlierDrive ? 'Earlier analyzed drive' : 'Previous-drive recommendation'}: ${recommendationText(suggestion, unit)}; not saved.${suggestion.reason ? ` ${learningReason(suggestion.reason)}` : ''}`)
   if (route && !statements.length) statements.push('No recommendation from this analyzed drive for this dial.')
   return statements.join(' ')
 }
@@ -178,6 +191,7 @@ export function validLearningPreference(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value) && value.version === 1 &&
     typeof value.valid === "boolean" && [true, false, null].includes(value.enabled) &&
     [true, false, null].includes(value.parked) && (value.vehicle === null || text(value.vehicle, 256)) &&
+    (value.controller === undefined || [null, 'torque', 'pid', 'angle', 'curvature'].includes(value.controller)) &&
     (value.valid ? typeof value.enabled === "boolean" && typeof value.parked === "boolean" && value.vehicle !== null : value.enabled === null)
 }
 
@@ -191,18 +205,25 @@ export const SURFACE_GROUPS = Object.freeze([
 ])
 
 const REASONS = {
+  partial_drive_provisional_only: "Only intact, fully saved sections were reviewed. These suggestions will not change your tune automatically.",
+  "candidate encoder clipping regression": "This change did not pass the steering-limit checks.",
+  newer_drive_refused_same_adjustment: "A newer drive did not support this same adjustment. Auto Learn left the tune unchanged.",
+  controller_checks_did_not_support_change: "This change did not pass the steering-command checks. Auto Learn kept your existing tune.",
   heldout_profile_does_not_support_training_step: "Part of the drive suggested this setting; separate windows did not confirm it.",
-  independent_support_for_frozen_training_profile: "Separate recorded windows support this starting point. Automatic approval is separate.",
-  training_candidate_not_independently_confirmed: "Training windows suggested this setting; it is not independently confirmed.",
-  recorded_candidate_requires_automatic_checks: "A recorded-drive starting point, not approved for automatic saving.",
+  independent_support_for_frozen_training_profile: "Separate parts of your drive support this suggestion. The controller checks must also pass before it is saved.",
+  training_candidate_not_independently_confirmed: "Some sections of the drive suggest this change. More independent driving is needed before Auto Learn can save it.",
+  recording_repeats_previous_trial_evidence: "This recording repeats driving already reviewed for this trial. Auto Learn is waiting for a different drive.",
+  recorded_candidate_requires_automatic_checks: "Your drive suggests this change. Auto Learn needs to confirm it before saving it automatically.",
+  recorded_provisional_suggestion: "Your drive produced this steering suggestion. Review the setting while parked.",
   conflicting_recorded_candidates: "Different windows suggested different settings. No single setting is recommended.",
-  trial_started_waiting_for_comparable_drive: "The trial ran, but this drive lacked matching comparison windows. The same bounded trial will be checked on another drive.",
-  trial_measurement_inconclusive: "The comparison did not establish improvement or worsening. The same bounded trial will be checked on another drive.",
+  trial_started_waiting_for_comparable_drive: "Your saved steering adjustments are kept for the next drive.",
+  independent_actual_tracking_stable: "Your saved steering adjustments are kept. Auto Learn continues reviewing your drives.",
+  trial_measurement_inconclusive: "Your saved steering adjustments are kept for the next drive.",
   trial_inconclusive_drive_limit: "Three trial drives did not establish an improvement. The prior tune was restored.",
   next_drive_observed_tracking_worse: "Comparable driving showed a steering regression, so the prior tune was restored.",
   analyzing_last_completed_drive: "Analyzing the last completed drive while parked.",
   checking_recorded_steering_recommendations: "Checking the recorded-drive recommendations against the original controller and steering outputs.",
-  recorded_tracking_suggestion_not_yet_qualified_for_automatic_application: "Recommendations were found, but none has passed the controller and steering-output checks required for automatic saving.",
+  recorded_tracking_suggestion_not_yet_qualified_for_automatic_application: "Auto Learn reviewed the drive and left your tune unchanged. Consistent suggestions are listed when available.",
   original_controller_or_registered_encoder_check_refused: "A tune was suggested, but at least one original controller or encoder check refused it. Your saved tune was kept.",
   original_scored_frame_not_eligible: "An original frame was inactive, limited or otherwise ineligible.",
   "candidate changed an actual limiter/support": "The candidate triggered an encoder limiter that the recorded request did not.",
@@ -211,7 +232,7 @@ const REASONS = {
   no_new_native_feasible_training_step: "No bounded training step passed the original steering-output checks. The saved tune was kept.",
   no_consistent_adjustment_in_completed_drive: "The independent parts of this drive did not support the same adjustment. The saved tune was kept.",
   more_independent_eligible_tracking_required: "The drive was analyzed. More complete independent steering windows are needed before saving a tune.",
-  bounded_trial_configured_for_next_drive: "A bounded, reversible tune was saved automatically for the next drive. Its road improvement is not yet confirmed.",
+  bounded_trial_configured_for_next_drive: "Auto Learn saved your steering adjustments for the next drive.",
   recorded_steering_window_inputs_unavailable: "The recording is missing inputs needed to verify its recommendations. The saved tune was kept.",
   controller_collection_required: "Waiting for active steering before collecting samples.",
   fresh_physical_residual_window_required: "Checking the car's current steering response.",
@@ -235,7 +256,27 @@ const REASONS = {
   scoring_later_matched_whole_episodes: "Comparing new steering windows with the baseline.",
   accepted_target_currently_acknowledged: "The controller acknowledged the accepted correction.",
 }
-export const learningReason = reason => Object.hasOwn(REASONS, reason) ? REASONS[reason] : "The device's detailed report is available in Activity."
+export function learningReason(reason) {
+  if (reason === 'vehicle_identity_unavailable') return 'This drive was reviewed on its own. Automatic saving is waiting for the car to identify itself.'
+  if (reason === "Assessment cache full") return "FLM ran out of space in its review history. The latest analysis could not be saved; this does not mean your saved tune was erased."
+  if (Object.hasOwn(REASONS, reason)) return REASONS[reason]
+  const pattern = /^observed_(understeer|oversteer|late_turn_in|early_turn_in|unwind_too_slow|unwind_too_fast|low_speed_unwillingness|center_chatter|notchy_mid_curve)_(left|right|center)$/.exec(reason)
+  if (pattern) {
+    const [, behavior, side] = pattern
+    return {
+      understeer: `On ${side} curves, the car turned less sharply than requested.`,
+      oversteer: `On ${side} curves, the car turned more sharply than requested.`,
+      late_turn_in: `Steering was slow to build as ${side} turns started.`,
+      early_turn_in: `Steering built too early as ${side} turns started.`,
+      unwind_too_slow: `While easing out of ${side} curves, steering stayed stronger than requested.`,
+      unwind_too_fast: `While easing out of ${side} curves, steering eased off faster than requested.`,
+      low_speed_unwillingness: `At low speed, steering was slow to build into ${side} turns.`,
+      center_chatter: 'Small steering corrections kept reversing on straights.',
+      notchy_mid_curve: `Steering made repeated corrections while holding ${side} curves.`,
+    }[behavior]
+  }
+  return "The device's detailed report is available in Activity."
+}
 export function sourceCaptureCounts(report) {
   const value = report?.current?.details?.['GLOBAL original source capture']
   return validTrackingResults(report?.current?.tracking) && value &&
@@ -258,6 +299,17 @@ export function validCoordinateRecommendations(rows) {
       stamp(row[3]) && row[3] > 0 && text(row[4], 240))
 }
 
+export function isConsistentSuggestion(row) {
+  return row.target !== null && !['conflicting_recorded_candidates', 'heldout_profile_does_not_support_training_step',
+    'controller_checks_did_not_support_change'].includes(row.reason)
+}
+
+function validSuggestionSources(rows) {
+  return Array.isArray(rows) && rows.length <= 35 && new Set(rows.map(row => row?.[0])).size === rows.length &&
+    rows.every(row => Array.isArray(row) && row.length === 2 && [...SURFACE_NAMES, ...FRICTION_NAMES].includes(row[0]) &&
+      text(row[1], 180) && row[1].length > 0)
+}
+
 export function offroadView(report) {
   const details = report?.current?.details
   if (!record(details) || !text(details['Completed drive analyzed'], 180) || !details['Completed drive analyzed'] ||
@@ -270,24 +322,41 @@ export function offroadView(report) {
   const observed = recordedSteeringView(details['Recorded steering response'])
   const recommendations = details['Recorded coordinate recommendations']
   if (recommendations !== undefined && !validCoordinateRecommendations(recommendations)) return null
+  const sources = details['Recorded suggestion sources'] ?? []
+  if (!validSuggestionSources(sources) || sources.some(([name]) => !recommendations?.some(row => row[0] === name))) return null
+  const sourceFor = Object.fromEntries(sources)
   const savedCount = details['Saved route adjustment count']
+  const partial = details['Drive analysis is partial'] === true
+  const partialSegments = details['Partial drive segments']
+  if (partial && (!Array.isArray(partialSegments) || partialSegments.length !== 2 || !partialSegments.every(stamp) ||
+      partialSegments[0] < 1 || partialSegments[0] >= partialSegments[1] || partialSegments[1] > 180)) return null
+  const latestRecording = details['Latest completed recording reviewed'], earlierSource = details['Findings retained from earlier drive']
+  const earlierDrive = latestRecording !== undefined || earlierSource !== undefined
+  if (earlierDrive && (!text(latestRecording, 180) || !latestRecording || latestRecording === details['Completed drive analyzed'] ||
+      earlierSource !== details['Completed drive analyzed'])) return null
   const checked = details['Controller and encoder check windows'], refused = details['Automatic tune refusal reasons']
   const checks = Array.isArray(checked) && checked.length === 2 && checked.every(stamp) && checked[0] <= checked[1] && checked[1] <= 36 &&
     Array.isArray(refused) && refused.length <= 36 && refused.every(r => Array.isArray(r) && r.length === 2 && text(r[0]) && stamp(r[1])) ?
     { passed: checked[0], required: checked[1], refusals: refused.map(([reason, count]) => ({ reason, count })) } : null
   const configurationState = details['Saved route configuration state'] ?? null
-  const stored = ['ready_for_next_drive', 'accepted', 'accepted_after_drive', 'rolled_back'].includes(configurationState)
+  const stored = ['ready_for_next_drive', 'accepted', 'accepted_after_drive', 'retained_after_drive', 'rolled_back'].includes(configurationState)
   const savedSurface = stored ? fullCoordinates(details['Full surface coordinates']) : null
   const savedFriction = stored ? frictionCoordinates(details['Saved friction-curve adjustments']) : null
   return { route: details['Completed drive analyzed'], samples: details['Recorded steering observations'],
+    partial, partialSegments: partial ? partialSegments : null,
+    evidenceDrives: stamp(details['Drives in steering evidence history']) && details['Drives in steering evidence history'] <= 8 ?
+      details['Drives in steering evidence history'] : null,
     reason: details['Analysis decision'], saved: details['Automatic configuration changed'] === true,
     configurationState, savedValues: savedSurface ? { ...savedSurface, ...(savedFriction || {}) } : null,
     observed, checks, savedCount: stamp(savedCount) && savedCount <= 35 ? savedCount : null,
     retained: details['Earlier analysis shown while updating'] === true,
-    suggestions: recommendations === undefined ? rows.map(([parameter, delta, windows, qualification]) => ({ parameter, delta, windows, qualification })) :
+    earlierDrive, latestRecording: earlierDrive ? latestRecording : null,
+    suggestions: (recommendations === undefined ? rows.map(([parameter, delta, windows, qualification]) => ({ parameter, delta, windows, qualification })) :
       recommendations.map(([parameter, baseline, target, windows, reason]) => ({ parameter, baseline, target,
-        delta: target === null ? null : target - baseline, windows, reason, qualification: 'controller_native_checks_not_passed' }))
-        .filter(row => row.target === null || row.target !== { ...savedSurface, ...savedFriction }[row.parameter]),
+        delta: target === null ? null : target - baseline, windows, reason, sourceRoute: sourceFor[parameter] ?? details['Completed drive analyzed'],
+        earlierDrive: sourceFor[parameter] !== undefined && sourceFor[parameter] !== details['Completed drive analyzed'],
+        qualification: 'controller_native_checks_not_passed' }))
+        .filter(row => row.target === null || row.target !== { ...savedSurface, ...savedFriction }[row.parameter])).filter(isConsistentSuggestion),
     moreSuggestions: details['More recorded suggestions omitted'] === true }
 }
 
@@ -308,6 +377,25 @@ export function recordedSteeringView(value) {
     points: value.points.map(([ns, desired, actual]) => ({ at: (ns - value.source_start_ns) / 1e6, desired, actual })) }
 }
 
+export function parkedAnalysisProgress(report) {
+  const current = report?.current
+  if (current?.status !== 'fitting') return null
+  const labels = { preparing: 'Preparing drive analysis', reading: 'Reading a recorded drive',
+    verifying: 'Verifying the recording', checking: 'Checking steering suggestions' }
+  const fallback = { loading_parked_analysis: 'preparing', analyzing_last_completed_drive: 'reading',
+    checking_recorded_steering_recommendations: 'checking' }[current.reason]
+  const value = current.details?.['Parked analysis progress']
+  const phase = Array.isArray(value) && value.length === 3 && Object.hasOwn(labels, value[0]) ? value[0] : fallback
+  if (!Object.hasOwn(labels, phase)) return null
+  const [, done, total] = Array.isArray(value) ? value : []
+  const counted = Array.isArray(value) && value.length === 3 && Object.hasOwn(labels, value[0]) && Number.isSafeInteger(done) && Number.isSafeInteger(total) && done >= 0 && total > 0 && done <= total && total <= 180
+  const steps = { preparing: 'Starting the parked analyzer.', reading: 'Reading the recording sections.',
+    verifying: 'Checking that the recording is unchanged.', checking: 'Checking the suggested changes.' }
+  return { phase, label: labels[phase], completed: counted ? done : null, total: counted ? total : null,
+    percent: counted && ['reading', 'verifying'].includes(phase) ? done / total * 100 : null,
+    detail: counted ? `${done} of ${total} sections read in this recording` : steps[phase] }
+}
+
 export function tunerStatus(report, live = false, choiceLive = false, error = "", reportFresh = live) {
   const preference = choiceLive && validLearningPreference(report?.preference) ? report.preference : null
   const current = report?.current
@@ -315,9 +403,11 @@ export function tunerStatus(report, live = false, choiceLive = false, error = ""
   if (preference?.valid && preference.enabled === false || !preference && live && current?.enabled === false)
     return { key: "off", tone: "muted", title: "Auto Learn is off", description: "No driving samples are being collected by the learner. Turn it on in steering settings to begin." }
   if (reportFresh && current?.status === 'fitting' && ['analyzing_last_completed_drive', 'checking_recorded_steering_recommendations'].includes(current.reason))
-    return { key: 'fitting', tone: 'active', title: 'Analyzing your completed drive', description: learningReason(current.reason) + (offroadView(report)?.retained ? ' Earlier completed-drive findings remain below while this analysis runs.' : '') }
+    return { key: 'fitting', tone: 'active', title: 'Analyzing your drive', description: learningReason(current.reason) + (offroadView(report)?.retained ? ' Earlier drive findings remain below while this analysis runs.' : '') }
   const route = reportFresh && (!preference || preference.parked) ? offroadView(report) : null
   if (route) {
+    if (route.partial)
+      return { key: 'partial', tone: 'warning', title: 'Part of your drive reviewed', description: learningReason(route.reason) }
     if (route.configurationState === 'ready_for_next_drive')
       return { key: 'next-drive', tone: 'ready', title: 'Tune saved for the next drive', description: learningReason(
         ['trial_started_waiting_for_comparable_drive', 'trial_measurement_inconclusive'].includes(route.reason)
