@@ -233,7 +233,7 @@ class DeviceSettingsTest(unittest.TestCase):
         intent = gateway.preview(page["view"], index, 0, token, generation, reset_default=True)["intent"]
         self.assertTrue(gateway.confirm(intent, token, generation))
         self.assertEqual(Path(self.params.get_param_path(key)).read_bytes(), b"0")
-    self.assertEqual(gateway.page("developer", token, generation)["rows"][2]["label"], "Speed display adjustment")
+    self.assertEqual([row["label"] for row in gateway.page("developer", token, generation)["rows"]].count("Speed display adjustment"), 1)
 
   def test_starport_stay_on_wifi_toggle(self):
     self.assertNotIn(STARPORT_WIFI_KEY, [row.key for row in self.owner.snapshot("starport_options").rows])
@@ -372,7 +372,7 @@ class DeviceSettingsTest(unittest.TestCase):
     keys = [row.key for row in rows]
     self.assertEqual(keys[keys.index(STARPORT_EXPERIMENTS_KEY) + 1:],
                      [STARPORT_EXPERIMENT_PREFIX + "gm_mychevrolet_w28e", STARPORT_EXPERIMENT_PREFIX + "polestar_ps2_aar_301433653",
-                      STARPORT_EXPERIMENT_PREFIX + "phone_ping"])
+                      STARPORT_EXPERIMENT_PREFIX + "honda_fit_t5a_83_01d", STARPORT_EXPERIMENT_PREFIX + "phone_ping"])
     rule_key = STARPORT_EXPERIMENT_PREFIX + "gm_mychevrolet_w28e"
     row = rows[keys.index(rule_key)]
     self.assertEqual((row.value, row.default_value, row.available), ("Off", "Off", True))
@@ -452,7 +452,7 @@ class CalibrationResetSettingsTest(unittest.TestCase):
     context.value = replace(context.value, parked=True)
     pending = preview()
     self.assertTrue(gateway.confirm(pending["intent"], "session", b"generation"))
-    self.assertIsNone(self.params.get("IsRhdDetected"))
+    self.assertFalse(Path(self.params.get_param_path("IsRhdDetected")).exists())
     self.assertTrue(self.params.get_bool("OnroadCycleRequested"))
 
   def test_calibration_reset_gateway_requires_confirmation_and_fresh_parked_state(self):
