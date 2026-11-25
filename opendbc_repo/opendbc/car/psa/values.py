@@ -63,6 +63,8 @@ class CarControllerParams:
   # the friction brakes take over below BRAKE_ON_ACCEL and stay on until the request is above BRAKE_OFF_ACCEL
   BRAKE_ON_ACCEL = -0.25  # m/s^2
   BRAKE_OFF_ACCEL = -0.1  # m/s^2
+  # a petrol car idles along at ~7 km/h with both pedals released, no torque request slows it below that
+  CREEP_SPEED = 2.0  # m/s
   # an EV regens on a negative torque request, brake only past that
   EV_BRAKE_ON_ACCEL = -0.45  # m/s^2
   EV_BRAKE_OFF_ACCEL = -0.25  # m/s^2

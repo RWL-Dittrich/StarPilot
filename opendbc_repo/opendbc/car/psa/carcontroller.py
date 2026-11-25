@@ -141,7 +141,10 @@ class CarController(CarControllerBase):
     torque_nm = np.interp(accel_cmd, ACCEL_LOOKUP, TORQUE_LOOKUP_EV if self.ev else TORQUE_LOOKUP)
     torque = float(max(P.TORQUE_MIN, min(torque_nm, P.TORQUE_MAX)))
 
-    braking = accel_cmd < brake_accel and not CS.out.gasPressed
+    # below creep speed only the brakes slow a petrol car: hold them for as long as the planner asks to slow,
+    # or an uphill's pitch compensation lets go just short of the stop and the car pulls away again
+    creep_hold = not self.ev and self.braking and accel < 0.0 and CS.out.vEgo < P.CREEP_SPEED
+    braking = (accel_cmd < brake_accel or creep_hold) and not CS.out.gasPressed
     self.braking = braking
 
     if self.CP.openpilotLongitudinalControl:

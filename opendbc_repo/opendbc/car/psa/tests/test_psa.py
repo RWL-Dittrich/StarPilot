@@ -516,10 +516,26 @@ class TestPsaBrakeHysteresis(PsaEmulationTest):
     self.assertTrue(self.braking(between), "left the brakes inside the hysteresis band")
     self.assertFalse(self.braking(self.OFF + 0.05))
 
+  CREEP_HOLD = True
+
+  def test_brakes_hold_below_creep_speed_while_the_planner_asks_to_slow(self):
+    # a gentle uphill: pitch compensation lifts a soft decel request above the off threshold
+    pitch = 0.02
+    kw = dict(long_active=True, accel=self.OFF - 0.1, pitch=pitch)
+    self.knock_out()
+    self.settled(long_active=True, accel=-1.0, v_ego=1.0, pitch=pitch)
+    self.assertEqual(int(self.settled(v_ego=0.4, **kw)['MDD_DECEL_CONTROL_REQ']), int(self.CREEP_HOLD))
+    self.assertEqual(int(self.emulated(long_active=True, accel=0.1, v_ego=0.4, pitch=pitch)['MDD_DECEL_CONTROL_REQ']), 0,
+                     "held the brakes against a request to move")
+
+    self.settled(long_active=True, accel=-1.0, v_ego=P.CREEP_SPEED + 1.0, pitch=pitch)
+    self.assertEqual(int(self.settled(v_ego=P.CREEP_SPEED + 1.0, **kw)['MDD_DECEL_CONTROL_REQ']), 0, "held the brakes above creep speed")
+
 
 class TestPsaEvBrakeHysteresis(TestPsaBrakeHysteresis):
   EV = True
   ON, OFF = P.EV_BRAKE_ON_ACCEL, P.EV_BRAKE_OFF_ACCEL
+  CREEP_HOLD = False
 
 
 class TestPsaEv(PsaEmulationTest):
